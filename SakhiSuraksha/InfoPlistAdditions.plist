@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	Dev-only App Transport Security exception so a physical iPhone on the
+	same Wi-Fi network can reach the local Safe Route ML server running on
+	this Mac (http://<Mac-LAN-IP>:8000 — see ml/README.txt). The iOS
+	Simulator does not need this: literal "localhost"/127.0.0.1 connections
+	are exempt from ATS automatically.
+
+	This is a local-development convenience for a feature with no shipping
+	backend yet. Before shipping to real users, either move Safe Route to a
+	real HTTPS-hosted backend and remove this exception, or scope it to a
+	specific known dev-server domain instead of NSAllowsArbitraryLoads.
+	-->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoadsInWebContent</key>
+		<false/>
+		<key>NSExceptionDomains</key>
+		<dict>
+			<key>localhost</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+			</dict>
+		</dict>
+		<!--
+		Physical devices reach the Mac by LAN IP (e.g. 192.168.1.42), not a
+		fixed hostname, so a per-domain exception can't be pre-declared.
+		NSAllowsLocalNetworking covers HTTP to private/local IP ranges
+		(RFC 1918, .local mDNS, link-local) without opening ATS to the
+		public internet the way NSAllowsArbitraryLoads would.
+		-->
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+</dict>
+</plist>
