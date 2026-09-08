@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 460" width="760" height="460">
+  <defs>
+    <linearGradient id="petalDark" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4a0e5c"/>
+      <stop offset="100%" stop-color="#c2185b"/>
+    </linearGradient>
+    <linearGradient id="petalMid" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#8e1b6f"/>
+      <stop offset="100%" stop-color="#e91e63"/>
+    </linearGradient>
+    <linearGradient id="petalLight" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#d81b7a"/>
+      <stop offset="100%" stop-color="#ff6f91"/>
+    </linearGradient>
+    <linearGradient id="face" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fbd9c9"/>
+      <stop offset="100%" stop-color="#f7c2ad"/>
+    </linearGradient>
+    <linearGradient id="titleGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#3a0e4d"/>
+      <stop offset="100%" stop-color="#e91e63"/>
+    </linearGradient>
+  </defs>
+
+  <!-- outer petals -->
+  <path d="M380 40 C 300 120, 260 190, 260 250 C 260 320, 320 370, 380 400 C 440 370, 500 320, 500 250 C 500 190, 460 120, 380 40 Z" fill="url(#petalDark)"/>
+  <path d="M170 190 C 230 220, 280 250, 300 290 C 260 300, 210 300, 170 280 C 140 260, 130 220, 170 190 Z" fill="url(#petalMid)"/>
+  <path d="M590 190 C 530 220, 480 250, 460 290 C 500 300, 550 300, 590 280 C 620 260, 630 220, 590 190 Z" fill="url(#petalMid)"/>
+  <path d="M110 250 C 170 260, 220 275, 250 300 C 210 320, 160 325, 120 310 C 95 298, 90 268, 110 250 Z" fill="url(#petalLight)"/>
+  <path d="M650 250 C 590 260, 540 275, 510 300 C 550 320, 600 325, 640 310 C 665 298, 670 268, 650 250 Z" fill="url(#petalLight)"/>
+
+  <!-- woman silhouette -->
+  <path d="M380 70 C 350 110, 335 150, 335 220 C 335 280, 350 330, 355 375 L 405 375 C 410 330, 425 280, 425 220 C 425 150, 410 110, 380 70 Z" fill="url(#face)"/>
+  <path d="M380 68 C 340 100, 320 145, 322 210 C 300 200, 292 150, 310 110 C 325 82, 355 66, 380 68 Z" fill="#3a0e4d"/>
+  <circle cx="392" cy="150" r="3.5" fill="#3a0e4d"/>
+
+  <!-- text -->
+  <text x="380" y="425" font-family="Georgia, 'Times New Roman', serif" font-size="58" font-weight="700" text-anchor="middle" fill="url(#titleGrad)">
+    Sakhi <tspan fill="#d81b60">Suraksha</tspan>
+  </text>
+  <text x="380" y="452" font-family="Verdana, Geneva, sans-serif" font-size="15" letter-spacing="3" text-anchor="middle" fill="#5c1a4d">
+    SAFE WOMEN &#183; STRONGER TOMORROW
+  </text>
+</svg>
