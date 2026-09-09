@@ -32,6 +32,7 @@ final class NotificationService {
 
     enum Category {
         case checkIn, deviation, etaNearing, connectivity, meshDelivery, emergency, saferRoute
+        case guardianRequest, guardianAccepted, guardianAssisting
 
         var title: String {
             switch self {
@@ -42,8 +43,37 @@ final class NotificationService {
             case .meshDelivery: return "Alert relayed"
             case .emergency:    return "Emergency active"
             case .saferRoute:   return "Safer route available"
+            case .guardianRequest:   return "Community Guardian request"
+            case .guardianAccepted:  return "Community Guardian responding"
+            case .guardianAssisting: return "Community Guardian assisting"
             }
         }
+    }
+
+    /// Identifier for the standing "journey active" notification — kept
+    /// stable so posting again (or clearing) replaces/removes the same one
+    /// instead of stacking duplicates in the notification center.
+    private static let ongoingJourneyID = "guardian.ongoingJourney"
+
+    /// A quiet, persistent notification shown for the duration of a journey
+    /// so the user has visible, discreet confirmation that Guardian is still
+    /// watching in the background — mirrors how ride-share/delivery apps
+    /// signal an active background session, without revealing anything
+    /// sensitive on the lock screen.
+    func postOngoingJourneyNotification(destinationName: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "Guardian is watching your journey"
+        content.body = "Tracking your trip to \(destinationName). Tap to open."
+        content.sound = nil
+        content.interruptionLevel = .passive
+        let request = UNNotificationRequest(identifier: Self.ongoingJourneyID,
+                                            content: content, trigger: nil)
+        center.add(request)
+    }
+
+    func clearOngoingJourneyNotification() {
+        center.removeDeliveredNotifications(withIdentifiers: [Self.ongoingJourneyID])
+        center.removePendingNotificationRequests(withIdentifiers: [Self.ongoingJourneyID])
     }
 
     func notify(_ category: Category, body: String, after seconds: TimeInterval = 0.5) {

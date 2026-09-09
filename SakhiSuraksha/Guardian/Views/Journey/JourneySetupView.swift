@@ -249,6 +249,7 @@ struct JourneySetupView: View {
                               route: route,
                               alternates: alternates,
                               data: app.safetyData)
+        app.journeyDidStart(destinationName: destinationName)
 
         let record = JourneyRecord(originName: "Current location",
                                    destinationName: destinationName,

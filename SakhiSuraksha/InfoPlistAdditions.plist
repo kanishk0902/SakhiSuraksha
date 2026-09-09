@@ -36,5 +36,17 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<!--
+	Lets an active journey keep tracking location (for deviation detection
+	and the discreet safety notification) after the screen locks or the user
+	switches apps — the whole point of a safety-monitoring journey is that it
+	doesn't stop the moment the phone goes in a pocket. Combined with
+	CLLocationManager.allowsBackgroundLocationUpdates, set only while a
+	journey is active (see JourneyService/LocationService).
+	-->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+	</array>
 </dict>
 </plist>

@@ -47,3 +47,7 @@ Carthage/Build/
 *.xcscmblueprint
 ml/data/*.csv
 ml/data/*.pkl
+
+# Secrets — never commit credentials
+AppSecrets.swift
+**/AppSecrets.swift

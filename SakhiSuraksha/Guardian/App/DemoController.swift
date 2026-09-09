@@ -32,7 +32,7 @@ final class DemoController {
     // MARK: Journey / deviation
 
     func triggerRouteDeviation() {
-        app.notifications.notify(.deviation, body: "Your route has changed significantly.")
+        app.notifications.notify(.deviation, body: "You've moved off your planned route.")
         app.promptCheckIn()
         mark("Route deviation (demo)")
     }
@@ -98,6 +98,47 @@ final class DemoController {
     func simulateWatchSOS() {
         (app.watch as? MockWatchService)?.simulateEvent(.sos)
         mark("Watch SOS (mock event)")
+    }
+
+    // MARK: Community Guardian (demo)
+    // Seeds local demo Guardian profiles (clearly isDemoSeed/.simulated) and
+    // drives them through the SAME CommunityGuardianService code path a real
+    // mesh Guardian would use — this is not a shadow implementation.
+
+    func seedDemoGuardians() {
+        guard let context = app.modelContext else { return }
+        let base = app.location.coordinate
+        let seeds: [(String, GuardianVerificationLevel, [GuardianCapability], Double)] = [
+            ("Guardian A4F2 (Demo)", .verified, [.firstAid, .medicalAssistance], 220),
+            ("Guardian K91X (Demo)", .community, [.security, .generalAssistance], 480),
+            ("Campus Security (Demo Org)", .organization, [.collegeSecurity, .security], 700),
+        ]
+        for (name, level, capabilities, distanceMeters) in seeds {
+            let offset = base.offset(latMeters: distanceMeters, lonMeters: 0)
+            let guardian = CommunityGuardian(
+                displayName: name, verificationLevel: level, availability: .available,
+                capabilities: capabilities, latitude: offset.latitude, longitude: offset.longitude,
+                lastLocationUpdate: .now, isDemoSeed: true, provenance: .simulated)
+            context.insert(guardian)
+        }
+        try? context.save()
+        mark("Demo guardians seeded")
+    }
+
+    /// Runs the full Community Guardian lifecycle end to end for a
+    /// presentation: SOS -> search -> demo guardians found -> accepted ->
+    /// responding -> completed. Uses the real activateSOS/guardianService
+    /// code paths throughout.
+    func simulateCommunityGuardianFlow() {
+        seedDemoGuardians()
+        app.activateSOS(message: "Demo emergency for Community Guardian walkthrough.")
+        Task {
+            try? await Task.sleep(for: .seconds(2))
+            app.guardianService.autoAcceptTopDemoCandidate()
+            try? await Task.sleep(for: .seconds(3))
+            app.guardianService.completeAssistance()
+        }
+        mark("Community Guardian flow (demo)")
     }
 
     // MARK: Reset

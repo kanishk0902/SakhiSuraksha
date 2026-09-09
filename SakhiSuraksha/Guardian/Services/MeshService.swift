@@ -48,6 +48,11 @@ enum MeshMessageType: String, Codable {
     case locationUpdate = "location"
     case text           = "text"
     case ack            = "ack"
+    // Community Guardian — payloads defined in CommunityGuardianService, kept
+    // out of MeshService itself so relay/routing logic stays payload-agnostic.
+    case guardianAvailability = "guardianAvailability"
+    case guardianRequest      = "guardianRequest"
+    case guardianResponse     = "guardianResponse"
 }
 
 // MARK: - Live peer model

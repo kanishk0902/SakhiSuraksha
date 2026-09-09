@@ -60,7 +60,12 @@ final class RoutingService {
         return Self.synthetic(from: origin, to: destination)
     }
 
-    /// Alternate routes for the corridor. Best-effort; synthesizes if needed.
+    /// Alternate routes for the corridor. The Safety Corridor's green/yellow/
+    /// red tiering needs 3 routes total (primary + 2 alternates) to actually
+    /// span all three tiers — MapKit's real walking directions rarely offer
+    /// more than 1-2 alternates in most areas, so this tops up with a
+    /// synthetic bowed route whenever MapKit doesn't provide enough,
+    /// honestly reported via provenance rather than silently only showing 2.
     func alternates(from origin: CLLocationCoordinate2D,
                     to destination: CLLocationCoordinate2D) async -> [[CLLocationCoordinate2D]] {
         let request = MKDirections.Request()
@@ -70,11 +75,21 @@ final class RoutingService {
         request.requestsAlternateRoutes = true
 
         let directions = MKDirections(request: request)
-        if let response = try? await directions.calculate(), response.routes.count > 1 {
-            return response.routes.dropFirst().map { $0.polyline.coordinates }
+        var results: [[CLLocationCoordinate2D]] = []
+        if let response = try? await directions.calculate() {
+            results = Array(response.routes.dropFirst().map { $0.polyline.coordinates }.prefix(2))
         }
-        // Synthesize one alternate bowed to the side.
-        return [Self.synthetic(from: origin, to: destination, bow: 0.0016).coordinates]
+
+        // Top up to 2 alternates with distinctly-bowed synthetic routes so the
+        // safety-tier legend (Safest/Moderate/Avoid) always has 3 routes to
+        // color, even where MapKit has no real alternates to offer.
+        let bows: [Double] = [0.0016, -0.0016]
+        var bowIndex = 0
+        while results.count < 2 {
+            results.append(Self.synthetic(from: origin, to: destination, bow: bows[bowIndex]).coordinates)
+            bowIndex += 1
+        }
+        return results
     }
 
     // MARK: Synthetic fallback

@@ -15,18 +15,20 @@ struct ActiveJourneyView: View {
     @Environment(\.modelContext) private var context
     @State private var showEndConfirm = false
     @State private var showGetSafe = false
+    @State private var showActiveNavigation = false
+    /// Per-route safety colours scored when the journey starts. Empty until scoring completes.
+    @State private var routeColors: [Color] = []
 
     var body: some View {
         Group {
             if let journey = app.journey.active {
                 ScrollView {
                     VStack(spacing: GuardianTheme.cardSpacing) {
-                        if let step = journey.currentStep {
-                            GuardianCard {
-                                TurnBanner(step: step, distanceMeters: journey.distanceToNextStepMeters)
-                            }
-                        }
                         mapCard(journey)
+                        PrimaryActionButton(title: "Start Navigation", systemImage: "location.north.line.fill",
+                                            color: GuardianTheme.accent) {
+                            showActiveNavigation = true
+                        }
                         if journey.deviation.severity() >= DeviationLevel.cautious.severity() {
                             deviationCard
                         }
@@ -37,6 +39,7 @@ struct ActiveJourneyView: View {
                     }
                     .padding()
                 }
+                .task(id: journey.id) { await scoreRoutes(journey) }
             } else {
                 ContentUnavailableView("No active journey", systemImage: "figure.walk")
             }
@@ -48,29 +51,80 @@ struct ActiveJourneyView: View {
             Button("Keep going", role: .cancel) {}
         }
         .navigationDestination(isPresented: $showGetSafe) { GetSafeView() }
+        .navigationDestination(isPresented: $showActiveNavigation) { ActiveNavigationView() }
+    }
+
+    private func scoreRoutes(_ journey: LiveJourney) async {
+        let all = [journey.corridor.routeCoordinates] + journey.corridor.alternateRoutes
+        guard all.count > 1 else { routeColors = []; return }
+        let provider = LocalRouteSafetyProvider(data: app.safetyData)
+        var scores: [Int] = []
+        for route in all {
+            let s = (try? await provider.safetyScore(for: route)) ?? 50
+            scores.append(s)
+        }
+        // Normalize across routes so they always span green/yellow/red.
+        // Relative rank (best vs worst route) is what matters for the user.
+        let minS = scores.min() ?? 50
+        let maxS = scores.max() ?? 50
+        let normalized: [Int]
+        if maxS - minS < 5 {
+            // Routes nearly identical score-wise → force colour spread by index
+            normalized = scores.indices.map { i in max(30, 90 - i * 25) }
+        } else {
+            normalized = scores.map { s in
+                Int(30.0 + Double(s - minS) / Double(maxS - minS) * 60.0)
+            }
+        }
+        routeColors = normalized.map { routeColor(score: $0) }
+    }
+
+    private func routeColor(score: Int) -> Color {
+        if score >= 65 { return GuardianTheme.safe }
+        if score >= 40 { return Color.orange }
+        return GuardianTheme.emergency
     }
 
     // MARK: Map
 
     private func mapCard(_ journey: LiveJourney) -> some View {
-        GuardianMap(routes: [journey.corridor.routeCoordinates] + journey.corridor.alternateRoutes,
+        let allRoutes = [journey.corridor.routeCoordinates] + journey.corridor.alternateRoutes
+        let colors: [Color]? = routeColors.count == allRoutes.count ? routeColors : nil
+        return GuardianMap(routes: allRoutes,
+                    routeColors: colors,
                     safePlaces: journey.corridor.nearbySafePlaces,
                     incidents: journey.corridor.incidents,
                     cctv: journey.corridor.cctv,
                     zones: journey.corridor.zones,
+                    checkpoints: journey.corridor.checkpoints,
                     destination: journey.destination,
+                    userPosition: app.location.currentLocation?.coordinate,
+                    userHeading: navigationHeading,
+                    minimalOverlays: true,
                     fitsRouteOnAppear: true)
-            .frame(height: 420)
+            .frame(height: 480)
             .clipShape(RoundedRectangle(cornerRadius: GuardianTheme.cornerRadius, style: .continuous))
-            .overlay(alignment: .topLeading) {
-                HStack(spacing: 8) {
-                    ProvenanceBadge(provenance: journey.routeProvenance)
-                    Text("Safety Corridor cached")
-                        .font(.caption2.weight(.semibold))
-                        .padding(.horizontal, 8).padding(.vertical, 4)
-                        .background(.ultraThinMaterial, in: Capsule())
+            // Turn-by-turn banner overlaid at the top — like Apple Maps navigation
+            .overlay(alignment: .top) {
+                if let step = journey.currentStep {
+                    TurnBanner(step: step, distanceMeters: journey.distanceToNextStepMeters)
+                        .padding(12)
+                        .background(.ultraThinMaterial,
+                                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .padding(.horizontal, 12).padding(.top, 12)
                 }
-                .padding(10)
+            }
+            .overlay(alignment: .topLeading) {
+                if journey.currentStep == nil {
+                    HStack(spacing: 8) {
+                        ProvenanceBadge(provenance: journey.routeProvenance)
+                        Text("Safety Corridor active")
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 8).padding(.vertical, 4)
+                            .background(.ultraThinMaterial, in: Capsule())
+                    }
+                    .padding(10)
+                }
             }
             .overlay(alignment: .bottomLeading) {
                 if let nearest = nearestSafePlace(journey) {
@@ -78,6 +132,33 @@ struct ActiveJourneyView: View {
                         .padding(10)
                 }
             }
+            .overlay(alignment: .bottomTrailing) {
+                if colors != nil {
+                    routeLegend
+                        .padding(10)
+                }
+            }
+    }
+
+    private var routeLegend: some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            legendDot(GuardianTheme.safe, "Safest")
+            legendDot(.orange, "Moderate")
+            legendDot(GuardianTheme.emergency, "Avoid")
+        }
+        .padding(.horizontal, 10).padding(.vertical, 8)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func legendDot(_ color: Color, _ label: String) -> some View {
+        HStack(spacing: 6) {
+            Text(label).font(.caption2.weight(.semibold))
+            Circle().fill(color).frame(width: 10, height: 10)
+        }
+    }
+
+    private var navigationHeading: CLLocationDirection? {
+        app.location.navigationHeading(fallbackBearingTo: app.journey.active?.destination)
     }
 
     private func nearestSafePlace(_ journey: LiveJourney) -> SafePlace? {
@@ -116,7 +197,7 @@ struct ActiveJourneyView: View {
     private var deviationCard: some View {
         GuardianCard {
             VStack(alignment: .leading, spacing: 12) {
-                Label("Your route has changed significantly.", systemImage: "arrow.triangle.branch")
+                Label("You've moved off your planned route.", systemImage: "arrow.triangle.branch")
                     .font(.headline)
                     .foregroundStyle(GuardianTheme.alert)
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 2),
@@ -268,18 +349,6 @@ struct ActiveJourneyView: View {
     }
 
     private func endJourney(completed: Bool) {
-        guard let journey = app.journey.active else { return }
-        let record = try? context.fetch(FetchDescriptor<JourneyRecord>())
-            .first { $0.originName == journey.originName && $0.destinationName == journey.destinationName && $0.endedAt == nil }
-        record?.endedAt = .now
-        record?.status = completed ? .completed : .cancelled
-        try? context.save()
-        if completed {
-            app.journey.complete()
-            Haptics.success()
-        } else {
-            app.journey.cancel()
-        }
-        app.recomputeSafety()
+        app.completeJourney(completed: completed, context: context)
     }
 }

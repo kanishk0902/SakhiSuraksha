@@ -30,6 +30,8 @@ final class AppModel {
     let nearbyPlaces  = NearbyPlacesService()
     let support       = SupportResourcesService()
     let helpRequests  = HelpRequestService()
+    let alerts        = AlertService()
+    let guardianService = CommunityGuardianService()
 
     // MARK: Emergency state
     var pendingMedicalSOS: MedicalEmergencyType? = nil
@@ -40,6 +42,11 @@ final class AppModel {
     var showWomenSupport = false
     var showReportSafetyIssue = false
     var showSafetyReports = false
+
+    // MARK: Community Guardian presentation
+    var showCommunityGuardianStatus = false
+    var showBecomeGuardian = false
+    var showGuardianDashboard = false
 
     // Watch: real WatchConnectivity on iOS, stub elsewhere.
     #if os(iOS)
@@ -76,7 +83,7 @@ final class AppModel {
 
     // MARK: Check-in
     var pendingCheckIn = false
-    var checkInPrompt = "Your journey has changed significantly. Are you safe?"
+    var checkInPrompt = "Checking in — are you safe?"
     var unansweredCheckIns = 0
     private var lastCheckInAt: Date?
     private var lastConfirmedSafeAt: Date?
@@ -101,6 +108,8 @@ final class AppModel {
 
         mesh.configure(modelContext: context)
         mesh.start()
+        guardianService.configure(modelContext: context, mesh: mesh)
+        mesh.onPacketReceived = { [weak self] packet in self?.guardianService.handle(packet) }
 
         connectivity.start()
         location.requestPermission()
@@ -108,6 +117,15 @@ final class AppModel {
         ensureSeedData(context: context)
 
         watch.onEvent { [weak self] event in self?.ingest(watchEvent: event) }
+
+        // "Always" authorization arrives asynchronously (system prompt), so
+        // background tracking is (re)applied here once it actually lands —
+        // requesting it in journeyDidStart alone would race the still-pending
+        // grant and leave background updates off for the rest of the trip.
+        location.onAuthorizedAlways = { [weak self] in
+            guard let self, self.journey.isActive else { return }
+            self.location.setBackgroundTracking(true)
+        }
 
         connectivity.onStateChange = { [weak self] in
             self?.mesh.flushQueue()
@@ -120,6 +138,49 @@ final class AppModel {
         Task { await notifications.refreshStatus() }
         recomputeSafety()
         startTicking()
+    }
+
+    // MARK: Journey background tracking
+    // A journey is the one time Guardian needs to keep watching location
+    // after the app is backgrounded — that's the whole safety promise of
+    // "start a journey and I'll know if something goes wrong." Outside of an
+    // active journey, background GPS is switched off again.
+
+    /// Call once a journey has started. Requests "Always" location (a no-op
+    /// if already denied/granted) and switches on background delivery plus a
+    /// persistent, discreetly-worded notification so the user has visible
+    /// confirmation Guardian is still watching with the screen off.
+    func journeyDidStart(destinationName: String) {
+        location.requestAlwaysPermission()
+        location.setBackgroundTracking(true)
+        notifications.postOngoingJourneyNotification(destinationName: destinationName)
+    }
+
+    func journeyDidEnd() {
+        location.setBackgroundTracking(false)
+        notifications.clearOngoingJourneyNotification()
+    }
+
+    /// Ends the active journey for real — marks its JourneyRecord
+    /// completed/cancelled, releases background tracking, and updates
+    /// safety state. Lifted out of ActiveJourneyView so both it and the
+    /// active-navigation arrival flow call the exact same completion path
+    /// rather than duplicating this logic.
+    func completeJourney(completed: Bool, context: ModelContext) {
+        guard let journey = self.journey.active else { return }
+        let record = try? context.fetch(FetchDescriptor<JourneyRecord>())
+            .first { $0.originName == journey.originName && $0.destinationName == journey.destinationName && $0.endedAt == nil }
+        record?.endedAt = .now
+        record?.status = completed ? .completed : .cancelled
+        try? context.save()
+        journeyDidEnd()
+        if completed {
+            self.journey.complete()
+            Haptics.success()
+        } else {
+            self.journey.cancel()
+        }
+        recomputeSafety()
     }
 
     private func startTicking() {
@@ -139,6 +200,7 @@ final class AppModel {
         if journey.isActive, let loc = location.currentLocation {
             let level = journey.update(location: loc)
             evaluateDeviation(level)
+            checkNearingDestination(journey.active)
         }
 
         if pendingCheckIn, let last = lastCheckInAt,
@@ -199,7 +261,14 @@ final class AppModel {
         let inCooldown = lastCheckInDismissedAt.map {
             Date.now.timeIntervalSince($0) < deviationCheckInCooldown
         } ?? false
-        if risk.shouldPromptCheckIn(previous: previous, next: result.state),
+        // Only prompt while a journey is actually active — the sheet's copy
+        // and actions ("I'm Safe" / "Taking Another Route") only make sense
+        // mid-journey. Without this guard, a low score from something
+        // unrelated to a journey (e.g. it's simply late at night, or GPS/
+        // safe-place data hasn't loaded yet right after launch) could pop
+        // this sheet on cold start with nothing to actually check in about.
+        if journey.isActive,
+           risk.shouldPromptCheckIn(previous: previous, next: result.state),
            !emergency.isSOSActive, !inCooldown {
             promptCheckIn()
         }
@@ -214,8 +283,19 @@ final class AppModel {
         if let last = lastCheckInDismissedAt, Date.now.timeIntervalSince(last) < deviationCheckInCooldown {
             return
         }
-        notifications.notify(.deviation, body: "Your route has changed significantly.")
+        notifications.notify(.deviation, body: "You've moved off your planned route.")
         promptCheckIn()
+    }
+
+    /// Fires the "Almost there" notification once per journey when progress
+    /// crosses 90% — a quiet nudge that arrival is close, matching what a
+    /// nav app would surface, without repeating on every subsequent tick.
+    private var notifiedNearingForJourneyID: UUID?
+    private func checkNearingDestination(_ journey: LiveJourney?) {
+        guard let journey, journey.progress >= 0.9,
+              notifiedNearingForJourneyID != journey.id else { return }
+        notifiedNearingForJourneyID = journey.id
+        notifications.notify(.etaNearing, body: "Almost there — you're close to \(journey.destinationName).")
     }
 
     // MARK: Check-in responses
@@ -299,10 +379,30 @@ final class AppModel {
         }
         notifications.notify(.emergency, body: "🚨 Emergency active. Tap to open Guardian. Location: \(mapLink)")
         recomputeSafety()
+
+        guardianService.logExternalEvent(emergencyID: packet.packetID, label: "SOS activated")
+        guardianService.startSearch(emergencyID: packet.packetID, category: source, coordinate: coord)
+
+        // Fire-and-forget: Telegram alert + Omnidimension AI call run in background
+        // so they never delay the emergency UI appearing.
+        let loc = location.currentLocation
+        let senderName = sender
+        Task {
+            await alerts.sendSOSAlert(location: loc, note: emergencyNote ?? "", senderName: senderName)
+        }
+        emergencyNote = nil
+
         return packet
     }
 
+    /// Optional note typed by the user on the pre-activation countdown screen.
+    /// Set before calling activateSOS; cleared after use.
+    var emergencyNote: String? = nil
+
     func resolveSOS() {
+        if let emergencyID = emergency.currentPacket?.packetID {
+            guardianService.endSearch(emergencyID: emergencyID)
+        }
         emergency.resolveSOS()
         latestWatchEvent = nil
         showSOSScreen = false
@@ -315,10 +415,36 @@ final class AppModel {
     // foreground (iOS does not allow unrestricted background voice
     // recognition). The phrase is an exact (case-insensitive) match — Guardian
     // never claims to detect a "dangerous tone."
+    //
+    // Requires THREE detections within 30 seconds to trigger, reducing false
+    // positives from the phrase appearing in normal conversation.
+
+    private var discreetPhraseCount = 0
+    private var firstDiscreetDetectionAt: Date?
+    private let discreetDetectionWindow: TimeInterval = 30
 
     func startDiscreetListening(phrase: String, countdownSeconds: Int = 10) {
+        discreetPhraseCount = 0
+        firstDiscreetDetectionAt = nil
         voiceTrigger.startListening(phrase: phrase) { [weak self] _ in
-            Task { @MainActor in self?.beginDiscreetCountdown(seconds: countdownSeconds) }
+            Task { @MainActor in
+                guard let self else { return }
+                let now = Date.now
+                // Reset if the detection window has expired
+                if let first = self.firstDiscreetDetectionAt,
+                   now.timeIntervalSince(first) > self.discreetDetectionWindow {
+                    self.discreetPhraseCount = 0
+                    self.firstDiscreetDetectionAt = nil
+                }
+                if self.discreetPhraseCount == 0 { self.firstDiscreetDetectionAt = now }
+                self.discreetPhraseCount += 1
+                Haptics.tap()   // subtle feedback so user knows each detection registered
+                if self.discreetPhraseCount >= 3 {
+                    self.discreetPhraseCount = 0
+                    self.firstDiscreetDetectionAt = nil
+                    self.beginDiscreetCountdown(seconds: countdownSeconds)
+                }
+            }
         }
     }
 

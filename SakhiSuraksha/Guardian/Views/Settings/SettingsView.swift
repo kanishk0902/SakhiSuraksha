@@ -39,6 +39,12 @@ struct SettingsView: View {
                     }
                 }
 
+                Section("Community") {
+                    NavigationLink { BecomeGuardianView() } label: {
+                        Label("Community Guardian", systemImage: "person.2.wave.2.fill")
+                    }
+                }
+
                 Section("Permissions") {
                     NavigationLink { LocationPermissionsView() } label: {
                         Label("Location", systemImage: "location.fill")

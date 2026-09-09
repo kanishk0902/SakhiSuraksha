@@ -30,6 +30,12 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
 
     static let fallbackCoordinate = CLLocationCoordinate2D(latitude: 28.6315, longitude: 77.2167)
 
+    /// Fired when authorization transitions to "Always" — the "Always" grant
+    /// is asynchronous (the user sees a system prompt), so callers that asked
+    /// for it can't just re-check the status right after requesting it; this
+    /// tells AppModel when it's safe to actually switch on background updates.
+    var onAuthorizedAlways: (() -> Void)?
+
     private let manager = CLLocationManager()
     private var isMonitoring = false
 
@@ -57,6 +63,16 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         manager.requestWhenInUseAuthorization()
     }
 
+    /// Requests "Always" authorization — needed so an active journey keeps
+    /// monitoring location (and can raise a deviation/emergency alert) after
+    /// the app is backgrounded or the screen locks. Only worth prompting for
+    /// once the user has already granted when-in-use, otherwise iOS ignores
+    /// the request.
+    func requestAlwaysPermission() {
+        guard authorizationStatus == .authorizedWhenInUse else { return }
+        manager.requestAlwaysAuthorization()
+    }
+
     func startContinuous() {
         if !hasPermission {
             manager.requestWhenInUseAuthorization()
@@ -75,6 +91,22 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         isMonitoring = false
         manager.stopUpdatingLocation()
         manager.stopUpdatingHeading()
+        setBackgroundTracking(false)
+    }
+
+    /// Enables/disables background location delivery. Called only while a
+    /// journey is active so Guardian doesn't run background GPS the rest of
+    /// the time — matches the "Always" permission's stated purpose and
+    /// avoids draining battery outside of a monitored trip.
+    func setBackgroundTracking(_ enabled: Bool) {
+        guard authorizationStatus == .authorizedAlways else {
+            manager.allowsBackgroundLocationUpdates = false
+            manager.pausesLocationUpdatesAutomatically = true
+            return
+        }
+        manager.allowsBackgroundLocationUpdates = enabled
+        manager.pausesLocationUpdatesAutomatically = !enabled
+        manager.showsBackgroundLocationIndicator = enabled
     }
 
     func startHeading() {
@@ -101,6 +133,25 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         Self.bearing(from: coordinate, to: target)
     }
 
+    /// Direction of travel for a navigation arrow/camera. GPS course
+    /// (direction of actual movement) is far more reliable while
+    /// walking/driving than the magnetometer heading, which reflects which
+    /// way the phone is pointed, not which way the user is going — so prefer
+    /// course when it's valid, falling back to compass heading, then bearing
+    /// toward a destination if one is given.
+    func navigationHeading(fallbackBearingTo destination: CLLocationCoordinate2D? = nil) -> CLLocationDirection? {
+        if let loc = currentLocation, loc.course >= 0 {
+            return loc.course
+        }
+        if headingAccuracy >= 0 {
+            return heading
+        }
+        if let destination {
+            return bearing(to: destination)
+        }
+        return nil
+    }
+
     static func bearing(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D) -> CLLocationDirection {
         let lat1 = from.latitude * .pi / 180
         let lon1 = from.longitude * .pi / 180
@@ -121,6 +172,9 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
             if status == .authorizedWhenInUse || status == .authorizedAlways {
                 self.isMonitoring = false // reset so startContinuous proceeds
                 self.startContinuous()
+                if status == .authorizedAlways {
+                    self.onAuthorizedAlways?()
+                }
             }
         }
     }

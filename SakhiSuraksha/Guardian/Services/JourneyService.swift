@@ -84,17 +84,20 @@ final class JourneyService {
                alternates: [[CLLocationCoordinate2D]],
                data: SafetyDataService) async -> LiveJourney {
 
-        // Awaited (not fire-and-forget) so checkpoints(along:) below can
-        // actually snap to real nearby safe places — without this, the
-        // search would still be in flight when the corridor is built and
-        // every checkpoint would silently fall back to a plain waypoint.
+        // Await safe-place search so checkpoints are based on real MapKit data.
         await data.refreshAndWait(around: origin)
+
+        // Checkpoints = nearest verified safe places within 5 km of origin,
+        // prioritising police stations and hospitals (highest-safety venues).
+        // These are real refuges the user can duck into, not abstract waypoints.
+        let checkpoints = Self.nearbyCheckpoints(from: origin, safePlaces: data.safePlaces)
+
         let corridor = SafetyCorridor(
             routeCoordinates: route.coordinates,
             alternateRoutes: alternates,
             destination: destination,
             expectedDuration: route.travelTime,
-            checkpoints: Self.checkpoints(along: route.coordinates, safePlaces: data.safePlaces),
+            checkpoints: checkpoints,
             nearbySafePlaces: data.safePlaces,
             incidents: data.incidents,
             cctv: data.cctv,
@@ -211,6 +214,49 @@ final class JourneyService {
         active?.deviation = .normal
     }
 
+    // MARK: Active navigation support
+
+    /// Real MapKit recalculation — used when active navigation detects a
+    /// significant deviation. Re-requests a walking route from the user's
+    /// current position to the journey's destination and replaces the
+    /// corridor's primary route/steps in place. Does not touch alternates or
+    /// routeSafetyScore (a full re-score is the dynamic-rerouting path's job,
+    /// which runs on its own periodic cycle) — this only restores turn-by-turn
+    /// guidance and an on-route classification after a real deviation.
+    func recomputeRoute(from location: CLLocationCoordinate2D, routing: RoutingService) async {
+        guard let journey = active else { return }
+        let result = await routing.route(from: location, to: journey.destination)
+        journey.corridor.routeCoordinates = result.coordinates
+        journey.corridor.steps = result.steps
+        journey.corridor.expectedDuration = result.travelTime
+        journey.routeProvenance = result.provenance
+        consecutiveBreaches = 0
+        journey.deviation = .normal
+    }
+
+    /// Remaining distance along the route from the user's current position to
+    /// the destination, via the nearest route point onward — an approximation
+    /// (route distance, not straight-line-to-destination) good enough for a
+    /// compact navigation ETA panel.
+    static func remainingRouteDistanceMeters(route: [CLLocationCoordinate2D], from location: CLLocation) -> Double? {
+        guard !route.isEmpty else { return nil }
+        var nearestIndex = 0
+        var nearestDistance = Double.greatestFiniteMagnitude
+        for (i, coord) in route.enumerated() {
+            let d = coord.location.distance(from: location)
+            if d < nearestDistance {
+                nearestDistance = d
+                nearestIndex = i
+            }
+        }
+        guard nearestIndex < route.count - 1 else { return 0 }
+        var total = 0.0
+        for i in nearestIndex..<(route.count - 1) {
+            total += route[i].location.distance(from: route[i + 1].location)
+        }
+        return total
+    }
+
     // MARK: Deviation classification (pure, testable)
 
     /// Conservative mapping. Small distances are never dangerous, and larger
@@ -288,6 +334,33 @@ final class JourneyService {
                                   provenance: .real)
             }
             return Checkpoint(name: "Checkpoint \(index + 1)", coordinate: point, provenance: .simulated)
+        }
+    }
+
+    /// Selects up to `maxCount` nearest safe places within `radiusMeters` of
+    /// `origin` as journey checkpoints — real refuges (police, hospital, etc.)
+    /// the user can duck into if they feel unsafe. Police/hospitals are sorted
+    /// first; within the same priority tier, closer = earlier in the list.
+    static func nearbyCheckpoints(from origin: CLLocationCoordinate2D,
+                                   safePlaces: [SafePlace],
+                                   maxCount: Int = 5,
+                                   radiusMeters: Double = 5000) -> [Checkpoint] {
+        let originLoc = origin.location
+        let nearby = safePlaces
+            .filter { $0.coordinate.location.distance(from: originLoc) <= radiusMeters }
+            .sorted {
+                let priorityA = ($0.type == .police || $0.type == .hospital) ? 0 : 1
+                let priorityB = ($1.type == .police || $1.type == .hospital) ? 0 : 1
+                if priorityA != priorityB { return priorityA < priorityB }
+                return $0.coordinate.location.distance(from: originLoc) <
+                       $1.coordinate.location.distance(from: originLoc)
+            }
+            .prefix(maxCount)
+        return nearby.map { place in
+            Checkpoint(name: place.name,
+                       coordinate: place.coordinate,
+                       safePlaceType: place.type,
+                       provenance: place.provenance)
         }
     }
 

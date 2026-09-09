@@ -23,7 +23,10 @@ struct SakhiSurakshaApp: App {
             PersistedRelayPacket.self,
             MedicalSOSEvent.self,
             CommunityReport.self,
-            DiscreetSOSSettings.self
+            DiscreetSOSSettings.self,
+            CommunityGuardian.self,
+            CommunityGuardianRequest.self,
+            EmergencyTimelineEvent.self
         ])
         let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
         do {

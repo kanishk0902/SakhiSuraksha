@@ -18,8 +18,6 @@ struct HomeView: View {
     @State private var showGuide = false
     @State private var showGetHelp = false
     @State private var showSafeRoute = false
-    @State private var tapCount = 0
-    @State private var tapResetTask: Task<Void, Never>?
     @Query private var contacts: [EmergencyContact]
 
     enum Route: Hashable { case getSafe, compass, share, score }
@@ -227,35 +225,18 @@ struct HomeView: View {
                 selection = .journey
             }
             Button {
-                handleSOSTap()
+                Haptics.warning()
+                app.showSOSScreen = true
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "sos")
-                    Text(tapCount > 0 && app.sosTapCount > 1
-                         ? "\(app.sosTapCount - tapCount) more"
-                         : "SOS")
+                    Text("SOS")
                         .font(.headline)
                 }
                 .guardianCapsule(GuardianTheme.emergency)
             }
             .buttonStyle(PressableStyle())
-            .accessibilityLabel("SOS — tap \(app.sosTapCount) times to activate")
-        }
-    }
-
-    private func handleSOSTap() {
-        tapResetTask?.cancel()
-        tapCount += 1
-        Haptics.tap()
-        if tapCount >= app.sosTapCount {
-            tapCount = 0
-            app.triggerSOS(source: .manual)
-            Haptics.warning()
-        } else {
-            tapResetTask = Task {
-                try? await Task.sleep(for: .seconds(1.5))
-                tapCount = 0
-            }
+            .accessibilityLabel("Open SOS screen")
         }
     }
 
@@ -379,7 +360,7 @@ struct HomeGuideView: View {
          "Tap 'Start Journey' and type any destination — a friend's house, a station, anywhere. Guardian fetches a real walking route and checks your GPS every 3 seconds. If you stray from the route, you'll get a check-in prompt."),
         ("sos", GuardianTheme.emergency,
          "SOS Button",
-         "Hold the red SOS button for 1.2 seconds to send an emergency alert. Guardian creates a packet with your exact GPS coordinates and opens an SMS to all your emergency contacts. You always tap Send — Guardian never messages anyone automatically."),
+         "Tap the red SOS button to open the emergency screen. You get a 10-second countdown you can cancel. After countdown: an AI voice call comes to your phone and a Telegram alert with your live location goes to your contacts automatically."),
         ("location.fill.viewfinder", GuardianTheme.accent,
          "Share Location",
          "Tap 'Share Location' to send your live coordinates to a contact. Works over internet, cellular, or even nearby Guardian devices via Bluetooth mesh when you're offline."),

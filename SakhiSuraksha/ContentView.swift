@@ -60,6 +60,9 @@ struct RootView: View {
         .sheet(isPresented: $app.showWomenSupport) { WomenSupportView() }
         .sheet(isPresented: $app.showReportSafetyIssue) { ReportSafetyIssueView() }
         .sheet(isPresented: $app.showSafetyReports) { SafetyReportsView() }
+        .sheet(isPresented: $app.showCommunityGuardianStatus) { CommunityGuardianStatusView() }
+        .sheet(isPresented: $app.showBecomeGuardian) { BecomeGuardianView() }
+        .sheet(isPresented: $app.showGuardianDashboard) { GuardianDashboardView() }
     }
 }
 

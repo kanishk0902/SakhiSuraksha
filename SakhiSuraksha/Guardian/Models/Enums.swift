@@ -564,6 +564,137 @@ enum CommunityReportType: String, Codable, CaseIterable, Identifiable, Sendable 
     }
 }
 
+// MARK: - Community Guardian
+
+/// How a Guardian's status was established. No real identity/first-aid/NGO
+/// verification backend exists yet — every level is honestly labeled as
+/// prototype/demo verification, never claimed as real-world certification.
+enum GuardianVerificationLevel: String, Codable, CaseIterable, Sendable {
+    case community
+    case verified
+    case organization
+
+    var title: String {
+        switch self {
+        case .community:    return "Community Guardian"
+        case .verified:     return "Verified Guardian"
+        case .organization: return "Organization Guardian"
+        }
+    }
+
+    /// Always includes an honest verification-source disclaimer — this
+    /// prototype has no real identity/certification backend.
+    var label: String {
+        switch self {
+        case .community:    return "\(title) (Prototype verification)"
+        case .verified:     return "\(title) (Demo verified)"
+        case .organization: return "\(title) (Demo verified)"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .community:    return "person.fill"
+        case .verified:     return "checkmark.seal.fill"
+        case .organization: return "building.2.fill"
+        }
+    }
+}
+
+enum GuardianAvailability: String, Codable, Sendable {
+    case available
+    case offline
+    case responding
+
+    var title: String {
+        switch self {
+        case .available:  return "Available"
+        case .offline:    return "Offline"
+        case .responding: return "Responding"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .available:  return GuardianTheme.safe
+        case .offline:    return .secondary
+        case .responding: return GuardianTheme.caution
+        }
+    }
+}
+
+enum GuardianCapability: String, Codable, CaseIterable, Identifiable, Sendable {
+    case firstAid
+    case medicalAssistance
+    case security
+    case collegeSecurity
+    case ngoVolunteer
+    case transportAssistance
+    case generalAssistance
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .firstAid:             return "First Aid"
+        case .medicalAssistance:    return "Medical Assistance"
+        case .security:             return "Security"
+        case .collegeSecurity:      return "College Security"
+        case .ngoVolunteer:         return "NGO Volunteer"
+        case .transportAssistance:  return "Transport Assistance"
+        case .generalAssistance:    return "General Assistance"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .firstAid:             return "cross.case.fill"
+        case .medicalAssistance:    return "stethoscope"
+        case .security:             return "shield.lefthalf.filled"
+        case .collegeSecurity:      return "graduationcap.fill"
+        case .ngoVolunteer:         return "heart.fill"
+        case .transportAssistance:  return "car.fill"
+        case .generalAssistance:    return "hand.raised.fill"
+        }
+    }
+}
+
+enum CommunityGuardianRequestStatus: String, Codable, Sendable {
+    case pending
+    case accepted
+    case declined
+    case expired
+    case completed
+    case cancelled
+
+    var title: String { rawValue.capitalized }
+}
+
+/// User-facing progress of a Guardian search for one active emergency.
+/// Not persisted — derived fresh each time from in-memory service state, since
+/// it only has meaning for the duration of one active emergency.
+enum CommunityGuardianFlowState: Sendable, Equatable {
+    case idle
+    case searching
+    case found
+    case responding
+    case assisting
+    case completed
+    case failed
+
+    var title: String {
+        switch self {
+        case .idle:       return ""
+        case .searching:  return "No verified Guardians found yet."
+        case .found:      return "Verified Guardians nearby."
+        case .responding: return "A verified Guardian has accepted the request."
+        case .assisting:  return "Guardian has indicated they are assisting."
+        case .completed:  return "Community assistance completed."
+        case .failed:     return "No Guardian was available."
+        }
+    }
+}
+
 // MARK: - Signals
 
 enum SignalKind: String, Codable, Sendable {

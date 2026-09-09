@@ -23,12 +23,20 @@ struct SOSView: View {
     @State private var autoActionsTriggered = false
     @Environment(\.modelContext) private var modelContext
 
+    // Pre-activation countdown (between hold-to-send and SOS firing)
+    @State private var preCountdown: Int? = nil      // nil = not counting down
+    @State private var emergencyNote: String = ""
+    @State private var preCountdownTask: Task<Void, Never>?
+    private let preCountdownDuration = 10
+
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 20) {
                     if app.emergency.isSOSActive {
                         activeState
+                    } else if let seconds = preCountdown {
+                        preActivationCountdownView(seconds: seconds)
                     } else {
                         holdToSend
                     }
@@ -36,24 +44,25 @@ struct SOSView: View {
                 .padding()
             }
             .background(backgroundColor.ignoresSafeArea())
-            .navigationTitle(app.emergency.isSOSActive ? "Emergency" : "SOS")
+            .navigationTitle(navigationTitle)
             .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .guardianLeading) {
-                    Button("Close") {
+                    Button(app.emergency.isSOSActive ? "Close" : (preCountdown != nil ? "Cancel SOS" : "Close")) {
                         if app.emergency.isSOSActive {
                             app.resolveSOS()
+                        } else if preCountdown != nil {
+                            cancelPreCountdown()
                         } else {
-                            dismiss()
+                            app.showSOSScreen = false
                         }
                     }
+                    .foregroundStyle(preCountdown != nil ? GuardianTheme.safe : .primary)
                 }
                 if app.emergency.isSOSActive {
                     ToolbarItem(placement: .guardianTrailing) {
-                        Button("I'm Safe Now") {
-                            app.resolveSOS()
-                        }
-                        .fontWeight(.semibold)
+                        Button("I'm Safe Now") { app.resolveSOS() }
+                            .fontWeight(.semibold)
                     }
                 }
             }
@@ -88,25 +97,147 @@ struct SOSView: View {
         }
     }
 
+    private var navigationTitle: String {
+        if app.emergency.isSOSActive { return "Emergency" }
+        if preCountdown != nil { return "Sending SOS…" }
+        return "SOS"
+    }
+
+    // MARK: Pre-activation countdown
+
+    private func preActivationCountdownView(seconds: Int) -> some View {
+        VStack(spacing: 24) {
+            // Ring countdown
+            ZStack {
+                Circle()
+                    .stroke(GuardianTheme.emergency.opacity(0.2), lineWidth: 12)
+                Circle()
+                    .trim(from: 0, to: CGFloat(seconds) / CGFloat(preCountdownDuration))
+                    .stroke(GuardianTheme.emergency,
+                            style: StrokeStyle(lineWidth: 12, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .animation(.linear(duration: 1), value: seconds)
+                VStack(spacing: 4) {
+                    Text("\(seconds)")
+                        .font(.system(size: 44, weight: .bold, design: .rounded))
+                        .contentTransition(.numericText())
+                    Text("sec")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: 130, height: 130)
+
+            Text("SOS will activate in \(seconds) seconds")
+                .font(.headline)
+                .multilineTextAlignment(.center)
+
+            Text("An AI call will reach you + your location is sent to your contacts via Telegram.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+
+            // Optional emergency note
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Describe what's happening (optional)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                TextField("e.g. being followed near MG Road…", text: $emergencyNote, axis: .vertical)
+                    .textFieldStyle(.roundedBorder)
+                    .lineLimit(3, reservesSpace: true)
+                    .font(.subheadline)
+            }
+
+            // Cancel button
+            Button {
+                cancelPreCountdown()
+            } label: {
+                Label("Cancel — I'm Safe", systemImage: "checkmark.circle.fill")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(GuardianTheme.safe, in: RoundedRectangle(cornerRadius: 14))
+                    .foregroundStyle(.white)
+            }
+            .buttonStyle(.plain)
+
+            Text("Tap your phone's back button or the Cancel button above to stop.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .padding(.top, 20)
+    }
+
+    private func startPreActivationCountdown() {
+        preCountdown = preCountdownDuration
+        emergencyNote = ""
+        preCountdownTask?.cancel()
+        Haptics.warning()
+        preCountdownTask = Task {
+            for remaining in stride(from: preCountdownDuration - 1, through: 0, by: -1) {
+                try? await Task.sleep(for: .seconds(1))
+                if Task.isCancelled { return }
+                preCountdown = remaining
+                if remaining <= 3 { Haptics.tap() }
+            }
+            guard !Task.isCancelled else { return }
+            fireSOS()
+        }
+    }
+
+    private func cancelPreCountdown() {
+        preCountdownTask?.cancel()
+        preCountdownTask = nil
+        preCountdown = nil
+        emergencyNote = ""
+        Haptics.success()
+    }
+
+    private func fireSOS() {
+        preCountdownTask = nil
+        preCountdown = nil
+        app.emergencyNote = emergencyNote.isEmpty ? nil : emergencyNote
+        app.triggerSOS(source: .manual)
+    }
+
     private var backgroundColor: Color {
         app.emergency.isSOSActive ? GuardianTheme.emergency.opacity(0.08) : Color.clear
     }
 
-    // MARK: Hold to send
+    // MARK: Idle — tap to start countdown
 
     private var holdToSend: some View {
-        VStack(spacing: 24) {
-            Text("Hold to send an emergency alert with your location to your trusted contacts.")
-                .font(.headline)
+        VStack(spacing: 28) {
+            Text("Tap SOS to start a 10-second countdown.\nYou can cancel any time before it fires.")
+                .font(.subheadline)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
-                .padding(.top, 20)
+                .padding(.top, 16)
 
-            HoldToSendButton {
-                app.triggerSOS(source: .manual)
+            // Big tap button — no hold required
+            Button {
+                startPreActivationCountdown()
+            } label: {
+                ZStack {
+                    Circle()
+                        .fill(GuardianTheme.emergency)
+                        .frame(width: 180, height: 180)
+                        .shadow(color: GuardianTheme.emergency.opacity(0.45), radius: 24, y: 8)
+                    VStack(spacing: 6) {
+                        Image(systemName: "sos")
+                            .font(.system(size: 52, weight: .bold))
+                        Text("TAP TO SEND")
+                            .font(.caption.weight(.bold))
+                            .tracking(1.5)
+                    }
+                    .foregroundStyle(.white)
+                }
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Tap to send SOS")
+            .accessibilityHint("Starts a 10-second countdown before sending the emergency alert")
 
-            Text("Guardian will not contact emergency services automatically. You stay in control.")
+            Text("A call will come to you + Telegram alert sent.\nYou stay in control — emergency services are not called automatically.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -135,10 +266,71 @@ struct SOSView: View {
             }
             .padding(.top, 8)
 
+            alertStatusCard
+            guardianCard
             packetCard
             locationCard
             contactsCard
             quickActions
+        }
+    }
+
+    private var alertStatusCard: some View {
+        GuardianCard {
+            VStack(alignment: .leading, spacing: 10) {
+                GuardianSectionHeader(title: "Alert Status", systemImage: "bell.badge.fill")
+                HStack(spacing: 8) {
+                    Image(systemName: app.alerts.callStatus.hasPrefix("Call dispatched") ? "phone.fill" : "phone.slash.fill")
+                        .foregroundStyle(app.alerts.callStatus.hasPrefix("Call dispatched") ? GuardianTheme.safe : GuardianTheme.caution)
+                    Text(app.alerts.callStatus)
+                        .font(.footnote)
+                }
+                HStack(spacing: 8) {
+                    Image(systemName: app.alerts.telegramStatus.contains("sent") ? "paperplane.fill" : "paperplane")
+                        .foregroundStyle(app.alerts.telegramStatus.contains("sent") ? GuardianTheme.safe : GuardianTheme.caution)
+                    Text(app.alerts.telegramStatus)
+                        .font(.footnote)
+                }
+            }
+        }
+    }
+
+    /// Additive, alongside the existing alerts — never a substitute for the
+    /// 112 call / trusted contacts flow above and below it. Regardless of
+    /// what happens here, those keep working exactly as before.
+    private var guardianCard: some View {
+        GuardianCard {
+            VStack(alignment: .leading, spacing: 10) {
+                GuardianSectionHeader(title: "Community Guardian", systemImage: "person.2.wave.2.fill")
+                switch app.guardianService.flowState {
+                case .idle:
+                    EmptyView()
+                case .searching:
+                    Label("Searching nearby guardians… (\(Int(app.guardianService.currentSearchRadius))m)",
+                          systemImage: "location.magnifyingglass")
+                        .font(.footnote).foregroundStyle(.secondary)
+                case .found:
+                    Label("\(app.guardianService.activeRequests.count) guardian(s) notified",
+                          systemImage: "person.2.fill")
+                        .font(.footnote).foregroundStyle(.secondary)
+                case .responding:
+                    Label("A verified Guardian is responding nearby", systemImage: "figure.walk")
+                        .font(.footnote.weight(.semibold)).foregroundStyle(GuardianTheme.safe)
+                case .assisting:
+                    Label("Guardian is assisting", systemImage: "checkmark.shield.fill")
+                        .font(.footnote.weight(.semibold)).foregroundStyle(GuardianTheme.safe)
+                case .completed:
+                    Label("Guardian assistance completed", systemImage: "checkmark.circle.fill")
+                        .font(.footnote).foregroundStyle(.secondary)
+                case .failed:
+                    Label("No Guardian available — your other alerts remain active", systemImage: "info.circle")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                if app.guardianService.flowState != .idle {
+                    Button("View Details") { app.showCommunityGuardianStatus = true }
+                        .font(.footnote.weight(.semibold))
+                }
+            }
         }
     }
 
@@ -281,47 +473,3 @@ struct SOSView: View {
     }
 }
 
-// MARK: - Hold to send button
-
-private struct HoldToSendButton: View {
-    var onSend: () -> Void
-    @State private var progress: CGFloat = 0
-    @State private var isPressing = false
-    private let duration: TimeInterval = 1.2
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .stroke(GuardianTheme.emergency.opacity(0.2), lineWidth: 16)
-            Circle()
-                .trim(from: 0, to: progress)
-                .stroke(GuardianTheme.emergency,
-                        style: StrokeStyle(lineWidth: 16, lineCap: .round))
-                .rotationEffect(.degrees(-90))
-            VStack(spacing: 6) {
-                Image(systemName: "sos").font(.system(size: 46, weight: .bold))
-                Text(isPressing ? "Keep holding…" : "HOLD TO SEND")
-                    .font(.subheadline.weight(.bold))
-            }
-            .foregroundStyle(GuardianTheme.emergency)
-        }
-        .frame(width: 230, height: 230)
-        .contentShape(Circle())
-        .onLongPressGesture(minimumDuration: duration, maximumDistance: 40) {
-            // Completed
-            progress = 1
-            Haptics.emergency()
-            onSend()
-        } onPressingChanged: { pressing in
-            isPressing = pressing
-            if pressing {
-                withAnimation(.linear(duration: duration)) { progress = 1 }
-            } else {
-                withAnimation(.easeOut(duration: 0.2)) { progress = 0 }
-            }
-        }
-        .accessibilityLabel("Hold to send SOS")
-        .accessibilityHint("Press and hold for just over one second to send an emergency alert")
-        .accessibilityAddTraits(.isButton)
-    }
-}
