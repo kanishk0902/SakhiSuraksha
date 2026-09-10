@@ -214,10 +214,15 @@ struct ActiveNavigationView: View {
         guard let journey = app.journey.active else { return }
         let allRoutes = [journey.corridor.routeCoordinates] + journey.corridor.alternateRoutes
         guard allRoutes.count > 1 else { return }
-        let provider = LocalRouteSafetyProvider(data: app.safetyData)
+        // Real model scores only. If any route can't be scored, leave the
+        // previous state alone rather than offering a "safer route" based on
+        // a placeholder number — suggesting a reroute on invented data is
+        // worse than suggesting nothing.
+        let provider = MLRouteSafetyProvider(routing: app.safeRouting)
         var scores: [Int] = []
         for route in allRoutes {
-            scores.append((try? await provider.safetyScore(for: route)) ?? 50)
+            guard let s = try? await provider.safetyScore(for: route) else { return }
+            scores.append(s)
         }
         currentRouteScore = scores.first
         guard let current = scores.first else { return }
@@ -293,8 +298,13 @@ struct ActiveNavigationView: View {
         }
 
         return VStack(spacing: 10) {
-            if saferAlternateIndex != nil, let score = saferAlternateScore {
-                saferRouteBanner(currentScore: currentRouteScore ?? journey.corridor.routeSafetyScore,
+            // Needs a real score on BOTH sides: the banner's whole claim is
+            // "this other route is safer than yours", which is meaningless
+            // without an actual score for the current route to compare against.
+            if saferAlternateIndex != nil,
+               let score = saferAlternateScore,
+               let current = currentRouteScore ?? journey.corridor.routeSafetyScore {
+                saferRouteBanner(currentScore: current,
                                 saferScore: score) { takeSaferRoute(journey) }
             }
 
@@ -304,9 +314,15 @@ struct ActiveNavigationView: View {
                         Label("Safe Route", systemImage: "shield.lefthalf.filled")
                             .font(.caption.weight(.semibold))
                         Spacer()
-                        Text("Safety Score: \(journey.corridor.routeSafetyScore)")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(journey.corridor.routeSafetyScore >= 65 ? GuardianTheme.safe : GuardianTheme.caution)
+                        if let score = journey.corridor.routeSafetyScore {
+                            Text("Safety Score: \(score)")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(score >= 70 ? GuardianTheme.safe : GuardianTheme.caution)
+                        } else {
+                            Text("Scoring route…")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     if let contactName = journey.contactName {
                         HStack {
@@ -333,7 +349,7 @@ struct ActiveNavigationView: View {
                     HStack(spacing: 10) {
                         SecondaryActionButton(title: "SOS", systemImage: "sos",
                                               tint: GuardianTheme.emergency) {
-                            app.activateSOS(message: nil)
+                            app.beginSOSCountdown()
                         }
                         SecondaryActionButton(title: "Safe Havens", systemImage: "shield.lefthalf.filled",
                                               tint: GuardianTheme.safe) {
@@ -407,7 +423,9 @@ private struct ArrivalView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     labeledRow("Destination", journey.destinationName)
                     labeledRow("Journey", "\(Int(journey.plannedDuration / 60)) min · \(journey.originName)")
-                    labeledRow("Safety Score", "\(journey.corridor.routeSafetyScore)")
+                    if let score = journey.corridor.routeSafetyScore {
+                        labeledRow("Safety Score", "\(score)")
+                    }
                 }
             }
 

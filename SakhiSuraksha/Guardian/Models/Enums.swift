@@ -313,6 +313,8 @@ enum EvidenceKind: String, Codable, Sendable {
 enum EmergencySource: String, Codable, Sendable {
     case manual
     case discreetPhrase
+    case gesture
+    case actionButton
     case medicalSOS
     case journeyTimeout
     case appleWatch      // future

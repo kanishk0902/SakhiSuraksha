@@ -32,20 +32,27 @@ final class AppModel {
     let helpRequests  = HelpRequestService()
     let alerts        = AlertService()
     let guardianService = CommunityGuardianService()
+    /// Shared instance (not per-view) so the ML location-safety score can
+    /// feed the main SafetyEngine score, not just SafetyScoreView's own
+    /// separate ML card. SafeRouteView/SafetyScoreView still hold their own
+    /// local instances for route search, which is unrelated to this feed.
+    let safeRouting   = SafeRoutingService()
 
     // MARK: Emergency state
-    var pendingMedicalSOS: MedicalEmergencyType? = nil
-    var showMedicalSOS = false
-    var showPeriodEmergency = false
-    var showINeedHelp = false
+    // Safe Havens is triggered contextually mid-journey (ActiveNavigationView)
+    // as well as from the Get Help hub, so it stays a shared AppModel flag
+    // rather than local view state. Other support screens (Medical SOS,
+    // Period Emergency, I Need Help, Women's Support, Report Safety Issue,
+    // Safety Reports) are reached exclusively through GetHelpHubView's own
+    // local state — no separate AppModel flag needed for those.
     var showSafeHavens = false
-    var showWomenSupport = false
-    var showReportSafetyIssue = false
-    var showSafetyReports = false
 
     // MARK: Community Guardian presentation
+    // showCommunityGuardianStatus is set from SOSView during an active,
+    // guardian-assisted emergency. showGuardianDashboard is set when an
+    // incoming guardian request notification arrives (see start(context:)
+    // below) so it can interrupt regardless of what screen is open.
     var showCommunityGuardianStatus = false
-    var showBecomeGuardian = false
     var showGuardianDashboard = false
 
     // Watch: real WatchConnectivity on iOS, stub elsewhere.
@@ -61,6 +68,22 @@ final class AppModel {
     var discreetSOSPending = false
     var discreetSOSCountdownSeconds = 0
     private var discreetCountdownTask: Task<Void, Never>?
+
+    // MARK: Gesture SOS (phone-side, no Watch needed)
+    let gestureTrigger = GestureTriggerService()
+    var gestureSOSPending = false
+    var gestureSOSCountdownSeconds = 0
+    private var gestureCountdownTask: Task<Void, Never>?
+    /// Persisted preference — whether gesture arming should auto-resume when
+    /// Guardian returns to the foreground. Mirrors the Watch app's autoArm.
+    var gestureSOSAutoArm: Bool {
+        get { UserDefaults.standard.object(forKey: "guardian.gestureSOS.autoArm") as? Bool ?? false }
+        set { UserDefaults.standard.set(newValue, forKey: "guardian.gestureSOS.autoArm") }
+    }
+    var gestureSOSCountdownDuration: Int {
+        get { UserDefaults.standard.object(forKey: "guardian.gestureSOS.countdown") as? Int ?? 5 }
+        set { UserDefaults.standard.set(newValue, forKey: "guardian.gestureSOS.countdown") }
+    }
 
     // MARK: Persistence
     var modelContext: ModelContext?
@@ -109,12 +132,25 @@ final class AppModel {
         mesh.configure(modelContext: context)
         mesh.start()
         guardianService.configure(modelContext: context, mesh: mesh)
-        mesh.onPacketReceived = { [weak self] packet in self?.guardianService.handle(packet) }
+        mesh.onPacketReceived = { [weak self] packet in
+            guard let self else { return }
+            let hadRequest = guardianService.incomingRequest != nil
+            guardianService.handle(packet)
+            // A new incoming guardian request needs to interrupt, not wait
+            // for the user to happen to open Settings — this was previously
+            // only visible by manually navigating to GuardianDashboardView.
+            if !hadRequest, guardianService.incomingRequest != nil {
+                notifications.notify(.guardianRequest,
+                                     body: "Someone nearby needs assistance. Tap to view the request.")
+                showGuardianDashboard = true
+            }
+        }
 
         connectivity.start()
         location.requestPermission()
         location.startContinuous()
         ensureSeedData(context: context)
+        completeQueuedBackgroundSOS(context: context)
 
         watch.onEvent { [weak self] event in self?.ingest(watchEvent: event) }
 
@@ -209,6 +245,7 @@ final class AppModel {
             lastCheckInAt = .now
         }
 
+        refreshMLAreaSafetyIfDue()
         recomputeSafety()
     }
 
@@ -236,7 +273,35 @@ final class AppModel {
         context.watchEvent        = latestWatchEvent
         context.hardwareEvent     = nil
         context.explicitEmergency = emergency.isSOSActive
+        // Only trust the last-fetched ML score if it's still for (roughly)
+        // this location — a stale score from a previous, distant location
+        // would be worse than no signal at all. safeRouting.locationSafety
+        // is nil whenever nothing was ever successfully fetched, outside
+        // coverage, or offline — buildContext never guesses in that case.
+        if let loc, let safety = safeRouting.locationSafety,
+           CLLocation(latitude: safety.lat, longitude: safety.lon).distance(from: loc) < 300 {
+            context.mlAreaSafetyScore = safety.safetyScoreRounded
+        }
         return context
+    }
+
+    /// Refreshes the ML area-safety score used by buildContext(). Runs on
+    /// its own slow cadence (not every 3s tick) since it's a real network
+    /// call to a local dev server — tick() only triggers this every
+    /// mlAreaSafetyRefreshInterval, and buildContext() reuses whatever was
+    /// last fetched in between (nil if nothing has succeeded yet).
+    private var lastMLAreaSafetyFetchAt: Date?
+    private let mlAreaSafetyRefreshInterval: TimeInterval = 120
+    private func refreshMLAreaSafetyIfDue() {
+        guard let loc = location.currentLocation else { return }
+        if let last = lastMLAreaSafetyFetchAt, Date.now.timeIntervalSince(last) < mlAreaSafetyRefreshInterval {
+            return
+        }
+        lastMLAreaSafetyFetchAt = .now
+        Task {
+            await safeRouting.fetchLocationSafety(at: loc.coordinate)
+            recomputeSafety()
+        }
     }
 
     var displayConnectivity: ConnectivityState {
@@ -334,12 +399,72 @@ final class AppModel {
     // MARK: SOS — unified entry point
     // Apple Watch / fall detection plug in here later via EmergencySource.
 
+    /// Seconds a user gets to cancel before a manually-tapped SOS actually fires.
+    static let sosCountdownDuration = 10
+
+    /// Remaining seconds on the pre-activation countdown, or nil when no
+    /// countdown is running. Lives on the model rather than in SOSView so that
+    /// every SOS button in the app shares one countdown — previously the
+    /// countdown existed only inside SOSView, so the SOS buttons on the
+    /// journey, navigation and offline screens fired instantly with no chance
+    /// to cancel, while the identical-looking button on Home did not.
+    private(set) var sosCountdown: Int?
+    private var sosCountdownTask: Task<Void, Never>?
+
+    /// THE entry point for every user-facing SOS affordance.
+    ///
+    /// Always shows the SOS screen and starts a cancellable countdown, so the
+    /// outcome of pressing "SOS" is identical no matter which screen it was
+    /// pressed on. Do NOT call activateSOS/triggerSOS directly from a view for
+    /// a user-initiated SOS — that path is for genuinely automatic triggers
+    /// (Watch, fall, discreet phrase, journey timeout) which have already done
+    /// their own confirmation and must not wait.
+    func beginSOSCountdown(source: EmergencySource = .manual, message: String? = nil) {
+        guard !emergency.isSOSActive else {
+            showSOSScreen = true
+            return
+        }
+        showSOSScreen = true
+        pendingSOSSource = source
+        pendingSOSMessage = message
+        sosCountdown = Self.sosCountdownDuration
+        Haptics.warning()
+        sosCountdownTask?.cancel()
+        sosCountdownTask = Task { [weak self] in
+            for remaining in stride(from: Self.sosCountdownDuration - 1, through: 0, by: -1) {
+                try? await Task.sleep(for: .seconds(1))
+                if Task.isCancelled { return }
+                self?.sosCountdown = remaining
+                if remaining <= 3 { Haptics.tap() }
+            }
+            guard !Task.isCancelled, let self else { return }
+            self.sosCountdown = nil
+            self.sosCountdownTask = nil
+            self.triggerSOS(source: self.pendingSOSSource, message: self.pendingSOSMessage)
+        }
+    }
+
+    /// Cancel a countdown before it fires. Safe to call when none is running.
+    func cancelSOSCountdown() {
+        guard sosCountdownTask != nil else { return }
+        sosCountdownTask?.cancel()
+        sosCountdownTask = nil
+        sosCountdown = nil
+        emergencyNote = nil
+        Haptics.success()
+    }
+
+    private var pendingSOSSource: EmergencySource = .manual
+    private var pendingSOSMessage: String?
+
     @discardableResult
     func triggerSOS(source: EmergencySource, message: String? = nil) -> EmergencyPacket? {
         let msg: String
         switch source {
         case .medicalSOS:      msg = message ?? "Medical emergency. I need help."
         case .discreetPhrase:  msg = message ?? "I need help. This is a discreet SOS alert."
+        case .gesture:         msg = message ?? "I need help. This is a silent SOS alert triggered by a phone gesture."
+        case .actionButton:    msg = message ?? "I need help. This is a silent SOS alert triggered by the Action Button."
         case .journeyTimeout:  msg = message ?? "I haven't reached my destination. Please check on me."
         default:               msg = message ?? nil ?? "I need help. This is an automated Guardian alert with my location."
         }
@@ -383,14 +508,34 @@ final class AppModel {
         guardianService.logExternalEvent(emergencyID: packet.packetID, label: "SOS activated")
         guardianService.startSearch(emergencyID: packet.packetID, category: source, coordinate: coord)
 
+        // Audio evidence starts here, not in SOSView. It used to live in that
+        // view's .task, which meant an SOS from the Watch, the Action Button or
+        // any path where SOSView wasn't actually on screen recorded nothing —
+        // the alert went out but the evidence silently didn't start.
+        if emergency.microphonePermission == .granted, !emergency.isRecording {
+            emergency.startEvidence(kind: .audio, location: coord,
+                                    safetyState: .emergency, journeyID: nil,
+                                    context: context)
+        }
+
         // Fire-and-forget: Telegram alert + Omnidimension AI call run in background
-        // so they never delay the emergency UI appearing.
+        // so they never delay the emergency UI appearing. The handle is kept
+        // so resolveSOS() can actually cancel it — URLSession requests are
+        // cooperatively cancellable, so "I'm Safe Now" genuinely stops an
+        // in-flight call/message rather than just dismissing the screen while
+        // it silently continues to a contact after the user is already safe.
         let loc = location.currentLocation
         let senderName = sender
-        Task {
-            await alerts.sendSOSAlert(location: loc, note: emergencyNote ?? "", senderName: senderName)
-        }
+        // Captured BEFORE the Task, like senderName: the line below clears
+        // emergencyNote synchronously, so reading it inside the Task body
+        // raced with that clear and sent an empty note — the user's typed
+        // description of what was happening never reached the alert.
+        let note = emergencyNote ?? ""
         emergencyNote = nil
+        alertTask?.cancel()
+        alertTask = Task {
+            await alerts.sendSOSAlert(location: loc, note: note, senderName: senderName)
+        }
 
         return packet
     }
@@ -399,7 +544,17 @@ final class AppModel {
     /// Set before calling activateSOS; cleared after use.
     var emergencyNote: String? = nil
 
+    /// The in-flight Telegram/Omnidimension alert Task from the most recent
+    /// activateSOS — cancelled by resolveSOS() so marking safe actually stops
+    /// any call/message still in flight.
+    private var alertTask: Task<Void, Never>?
+
     func resolveSOS() {
+        // Also stops a countdown that hasn't fired yet, so "I'm safe" works
+        // whether the SOS is pending or already sent.
+        cancelSOSCountdown()
+        alertTask?.cancel()
+        alertTask = nil
         if let emergencyID = emergency.currentPacket?.packetID {
             guardianService.endSearch(emergencyID: emergencyID)
         }
@@ -448,8 +603,38 @@ final class AppModel {
         }
     }
 
+    /// The in-flight auto-arm request (permission check + startListening) —
+    /// tracked so backgrounding mid-request can actually cancel it. Without
+    /// this, a still-pending permission/auth await could resume and arm the
+    /// mic right after stopDiscreetListening() was told to disarm it.
+    private var autoArmTask: Task<Void, Never>?
+
     func stopDiscreetListening() {
+        autoArmTask?.cancel()
+        autoArmTask = nil
         voiceTrigger.stopListening()
+    }
+
+    /// Auto-arms Discreet SOS whenever the app is foregrounded, so the user
+    /// never has to remember to tap "Start Listening" — matches the app's own
+    /// enable/phrase settings, and requests microphone/speech authorization
+    /// only if not already granted. Still foreground-only: iOS does not allow
+    /// unrestricted background microphone access, so this must be re-armed
+    /// (automatically, via scenePhase) every time the app returns to the
+    /// foreground, and RootView disarms it the moment the app backgrounds.
+    func autoArmDiscreetListeningIfEnabled(settings: DiscreetSOSSettings?) {
+        guard let settings, settings.isEnabled,
+              !settings.phrase.trimmingCharacters(in: .whitespaces).isEmpty,
+              !voiceTrigger.isListening else { return }
+        autoArmTask?.cancel()
+        autoArmTask = Task {
+            let granted = voiceTrigger.isAuthorized
+                ? true
+                : await voiceTrigger.requestAuthorization()
+            guard !Task.isCancelled, granted else { return }
+            startDiscreetListening(phrase: settings.phrase,
+                                   countdownSeconds: settings.activationTimeoutSeconds)
+        }
     }
 
     func beginDiscreetCountdown(seconds: Int = 10) {
@@ -473,6 +658,53 @@ final class AppModel {
         discreetCountdownTask?.cancel()
         discreetCountdownTask = nil
         discreetSOSPending = false
+    }
+
+    // MARK: Gesture SOS (phone-side, no Watch needed)
+    // Foreground-only: iOS suspends CoreMotion updates once the app leaves
+    // the foreground, matching the same honest limitation as Discreet SOS.
+    // Three sharp phone flicks within ~2 seconds starts a cancellable
+    // countdown, exactly mirroring the Apple Watch app's gesture flow but
+    // running directly on the phone — no Watch pairing required.
+
+    func armGestureSOS() {
+        guard !gestureTrigger.isArmed else { return }
+        gestureTrigger.arm(onFlick: {
+            Haptics.tap()
+        }, onTripleFlick: { [weak self] in
+            self?.beginGestureCountdown()
+        })
+    }
+
+    func disarmGestureSOS() {
+        gestureTrigger.disarm()
+    }
+
+    func beginGestureCountdown() {
+        guard !gestureSOSPending else { return }
+        gestureSOSPending = true
+        gestureSOSCountdownSeconds = gestureSOSCountdownDuration
+        gestureTrigger.pause() // don't let more flicks fire mid-countdown
+        Haptics.warning()
+        gestureCountdownTask?.cancel()
+        gestureCountdownTask = Task { [weak self] in
+            while let self, self.gestureSOSCountdownSeconds > 0 {
+                try? await Task.sleep(for: .seconds(1))
+                if Task.isCancelled { return }
+                self.gestureSOSCountdownSeconds -= 1
+            }
+            guard let self, self.gestureSOSPending else { return }
+            self.gestureSOSPending = false
+            self.triggerSOS(source: .gesture)
+        }
+    }
+
+    func cancelGestureSOS() {
+        gestureCountdownTask?.cancel()
+        gestureCountdownTask = nil
+        gestureSOSPending = false
+        Haptics.tap()
+        if gestureTrigger.isArmed { gestureTrigger.resume() }
     }
 
     // MARK: Watch events
@@ -503,6 +735,26 @@ final class AppModel {
         }
         fakes.forEach { context.delete($0) }
         if !fakes.isEmpty { try? context.save() }
+    }
+
+    /// Finds any EmergencyPacket the Action Button's background App Intent
+    /// (TriggerSOSIntent) wrote directly to SwiftData and left .queued —
+    /// that process has no AppModel/EmergencyService to call into, so it
+    /// only persists the record. This is where that silent trigger actually
+    /// completes: shows the SOS screen and adopts the packet into
+    /// EmergencyService's active state, exactly as if it had just fired.
+    /// Runs every time the app starts, so a queued trigger is never lost —
+    /// only delayed until the app is next opened for any reason.
+    private func completeQueuedBackgroundSOS(context: ModelContext) {
+        let queuedActionButtonPackets = ((try? context.fetch(FetchDescriptor<EmergencyPacket>())) ?? [])
+            .filter { $0.source == .actionButton && $0.deliveryState == .queued }
+        guard let packet = queuedActionButtonPackets.max(by: { $0.timestamp < $1.timestamp }) else { return }
+
+        emergency.adopt(queuedPacket: packet, mesh: mesh)
+        showSOSScreen = true
+        notifications.notify(.emergency, body: "A silent SOS from your Action Button is now active.")
+        Haptics.emergency()
+        recomputeSafety()
     }
 }
 

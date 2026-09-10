@@ -4,20 +4,25 @@ Jaipur Safe Route — local dev setup
 This runs the ML-backed safe-routing backend locally on your Mac and wires
 it to the Guardian iOS app's new "Safe Route" screen (Home → Safe Route).
 
-What's here
------------
-- data/jaipur_segments_scored.csv — 368,094 scored Jaipur street segments
-- data/danger_model.pkl — trained RandomForestRegressor (currently loaded
-  but NOT used for live prediction — danger_score is precomputed in the CSV;
-  the model is kept for future use). Loading it logs a scikit-learn version
-  mismatch warning (pickled with 1.6.1, this venv has 1.9.0) — harmless
-  since .predict() is never called, but re-pickle with a matching version
-  before you ever do call it.
-- src/main.py — the core scoring/routing logic (CSV load, k-d tree nearest-
-  segment lookup, OSRM multi-mode routing, worst-segment scoring, tier
-  classification). Originally written for Appwrite Cloud Functions.
-- src/local_server.py — a thin FastAPI wrapper around main.py so it can run
-  directly on this Mac instead of in the cloud. main.py itself is untouched.
+What's here (v2)
+-----------------
+- data/jaipur_segments_safety_final.csv — 368,094 Jaipur street segments,
+  with real per-segment features (road_type_risk, lighting_risk_for_danger,
+  police_risk, footfall_risk) plus a precomputed safety_score fallback column.
+- data/danger_model_v2.pkl — trained RandomForestRegressor, and it IS called
+  live now (model.predict() runs per request in src/main.py — see that
+  file's docstring for the v1→v2 change list). Loading it logs a
+  scikit-learn version-mismatch warning (pickled with 1.6.1, this venv has
+  1.9.0) — verified to still load correctly and expose the expected 4
+  features in order; re-pickle with a matching version if results ever look
+  suspicious.
+- src/main.py — v2: a self-contained FastAPI app (defines `app` directly).
+  Core logic: CSV/model load, k-d tree nearest-segment lookup, live
+  model.predict() + citywide crime multiplier, OSRM multi-mode routing,
+  worst-segment (lowest-safety) scoring, fixed-threshold tier classification,
+  top-3-safest route ranking.
+- src/local_server.py has been REMOVED — v2's main.py is itself the FastAPI
+  app (no separate Appwrite-entrypoint/local-wrapper split anymore).
 
 1. One-time setup
 ------------------
@@ -28,15 +33,15 @@ What's here
 2. Run the server
 ------------------
     cd ml
-    .venv/bin/uvicorn src.local_server:app --host 0.0.0.0 --port 8000 --reload
+    .venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
 
 First request after startup loads the 368k-row CSV and builds the k-d tree
 (a couple seconds) — subsequent requests are fast. Leave this running in a
 terminal while you use the app.
 
 Health check:
-    curl http://localhost:8000/safe-routes
-    → {"status":"ok","segments_loaded":368094,"tier_thresholds":{...}}
+    curl http://localhost:8000/health
+    → {"status":"ok","segments_loaded":368094,"model_features":[...],"crime_multiplier":1.0523}
 
 Example route request:
     curl -X POST http://localhost:8000/safe-routes \
@@ -77,19 +82,31 @@ Home → Safe Route → search a destination → pick walking/cycling/driving
 green/yellow/red route options with distance, duration, and a 0-100 safety
 score. A persistent "Beta" badge is shown — see the honesty notes below.
 
-Known model limitations (shown to the user, not hidden)
----------------------------------------------------------
-- lighting_risk and crime_risk are constant placeholder values (no real
-  data source integrated yet) — the model is really running on 3 signals:
-  road type, police proximity, footfall density.
-- Tier thresholds are calibrated from the real score DISTRIBUTION (33rd/
-  66th percentile), not fixed points, but that calibration was only spot-
-  checked against ~10 sampled routes — not statistically validated.
-  Exact values from the current dataset: green_max ≈ 0.482,
-  yellow_max ≈ 0.594 (danger_score scale, lower = safer).
+Known model limitations (shown to the user, not hidden) — v2
+----------------------------------------------------------------
+- Crime data is real (NCRB 2001-2005) but city-wide only, applied as a flat
+  multiplier on the model's output rather than a per-segment feature — every
+  per-segment crime proxy tested during development correlated too strongly
+  with police_risk/footfall_risk to count as independent signal, so this is
+  an honest simplification, not an oversight.
+- Only 16 police stations were found in OSM data for Jaipur (likely an
+  undercount versus the real number).
+- lighting_risk_for_danger and road_type_risk are real (no longer constants)
+  but modest contributors — police_risk dominates the model's predictions,
+  which is a genuine data finding.
+- Tier thresholds are FIXED business rules now (safety_score >75 = green,
+  25–75 = yellow, <25 = red), not derived from the data distribution like
+  v1's percentile approach — this is intentional per product requirements.
 - No ground-truth validation exists — don't present this as "accurate."
 - Exposure multipliers (walking 1.5x, cycling 1.15x, driving 1.0x) and
   traffic-correction factors are estimates, not measured from real trips.
+- OSRM won't always return 3 route alternatives, especially for short/direct
+  trips — the API then returns however many real alternatives exist (1-3),
+  not a padded or fabricated count.
+
+These are all returned in the API response's `disclosed_limitations` array —
+surface them wherever the app already shows its Beta badge/provenance
+labeling, so the app's honesty about limitations carries forward.
 
 Not a shipping architecture
 ------------------------------

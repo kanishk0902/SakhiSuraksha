@@ -365,6 +365,7 @@
 				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Guardian uses your location to monitor your journey and trigger alerts if you need help.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Guardian needs your location to find nearby safe places and send your coordinates in emergency alerts.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Guardian needs microphone access to listen for your discreet SOS phrase while the app is open.";
+				INFOPLIST_KEY_NSMotionUsageDescription = "Guardian uses motion data to detect a triple phone-flick gesture that starts an SOS alert.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Guardian uses on-device speech recognition to detect your discreet SOS phrase while the app is open.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
@@ -415,6 +416,7 @@
 				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Guardian uses your location to monitor your journey and trigger alerts if you need help.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Guardian needs your location to find nearby safe places and send your coordinates in emergency alerts.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Guardian needs microphone access to listen for your discreet SOS phrase while the app is open.";
+				INFOPLIST_KEY_NSMotionUsageDescription = "Guardian uses motion data to detect a triple phone-flick gesture that starts an SOS alert.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Guardian uses on-device speech recognition to detect your discreet SOS phrase while the app is open.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;

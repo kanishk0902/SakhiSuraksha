@@ -2,10 +2,20 @@
 //  SafetyEngine.swift
 //  Guardian
 //
-//  Transparent, explainable safety scoring. Every point of the score is traced
-//  to a concrete SafetySignal so the UI can always answer "why did this change?".
-//  The engine is a pure function of its input context, which keeps it testable
-//  and lets a real ML model replace it later behind the same interface.
+//  The safety score is the real ML model's output (the Jaipur street-segment
+//  RandomForest in ml/, fed via AppModel/SafeRoutingService) — nothing else
+//  contributes to the number. There is deliberately no blend with route
+//  deviation, nearby-safe-place distance, connectivity, or any other
+//  heuristic guess; those were arbitrary point values, not measured signals,
+//  and mixing them into "the safety score" made it look precise while
+//  actually being invented. When the ML score isn't available (outside the
+//  model's Jaipur coverage, offline, or not yet fetched), there IS no score
+//  — the UI must show that honestly rather than falling back to a guess.
+//
+//  The one thing that still overrides the score is a genuine active
+//  emergency (explicit SOS, Watch SOS, discreet hardware SOS) — that's a
+//  real, already-happened event, not a predictive heuristic, so it forces
+//  the safety STATE to .emergency regardless of what the area score says.
 //
 
 import Foundation
@@ -29,134 +39,40 @@ struct SafetyContext {
     var watchEvent: WatchSafetyEvent? = nil
     var hardwareEvent: HardwareSafetyEvent? = nil
     var explicitEmergency: Bool = false
+    /// 0-100 ML-predicted safety score for the user's current location, from
+    /// the Jaipur street-segment model (SafeRoutingService.fetchLocationSafety)
+    /// — nil whenever it isn't available (outside model coverage, offline, or
+    /// not yet fetched). Replaces the old hand-tuned time-of-day guess
+    /// ("+10 for daytime") with a real, place-specific signal; when nil, NO
+    /// signal is added rather than falling back to a guess.
+    var mlAreaSafetyScore: Int? = nil
 }
 
 @Observable
 final class SafetyEngine {
 
-    /// Produce a fully explained safety confidence from a context.
+    /// Produce a safety confidence purely from the ML area-safety score.
+    /// No other signal contributes to the number — see this file's header
+    /// for why the old blended heuristics were removed.
     func evaluate(_ context: SafetyContext) -> SafetyConfidence {
         var signals: [SafetySignal] = []
 
-        // Baseline environment: night hours reduce confidence.
-        let hour = Calendar.current.component(.hour, from: context.date)
-        if hour >= 22 || hour < 5 {
-            signals.append(.init(kind: .timeOfDay, label: "Late night hours (10pm–5am)", impact: -15))
-        } else if hour >= 20 {
-            signals.append(.init(kind: .timeOfDay, label: "Evening hours", impact: -6))
-        } else if hour >= 6 && hour < 20 {
-            signals.append(.init(kind: .timeOfDay, label: "Daytime", impact: +10))
+        // The ML score IS the score — not one signal among several. When
+        // it's nil (outside coverage, offline, not yet fetched), there is
+        // genuinely no score to show; the UI is responsible for displaying
+        // that honestly rather than this engine inventing a fallback number.
+        let score = context.mlAreaSafetyScore ?? 50
+        if let mlScore = context.mlAreaSafetyScore {
+            signals.append(.init(kind: .timeOfDay,
+                                 label: "ML area safety score: \(mlScore)/100",
+                                 impact: mlScore - 50, provenance: .real))
         }
 
-        // Route adherence / deviation.
-        switch context.deviation {
-        case .normal:
-            if context.onJourney {
-                signals.append(.init(kind: .routeAdherence, label: "On planned route", impact: +12))
-            }
-        case .minor:
-            signals.append(.init(kind: .routeDeviation, label: "Minor route change", impact: -8))
-        case .cautious:
-            signals.append(.init(kind: .routeDeviation, label: "Moderate route deviation", impact: -20))
-        case .alert:
-            signals.append(.init(kind: .routeDeviation, label: "Route deviation detected", impact: -32))
-        case .emergency:
-            signals.append(.init(kind: .routeDeviation, label: "Severe route deviation", impact: -45))
-        }
-
-        // Nearby safe places.
-        if let meters = context.nearestSafePlaceMeters {
-            if meters < 200 {
-                signals.append(.init(kind: .nearbySafePlaces,
-                                     label: "Safe place \(Int(meters)) m away", impact: +18))
-            } else if meters < 500 {
-                signals.append(.init(kind: .nearbySafePlaces,
-                                     label: "Safe place \(Int(meters)) m away", impact: +12))
-            } else if meters < 1000 {
-                signals.append(.init(kind: .nearbySafePlaces,
-                                     label: "Nearest safe place \(Int(meters)) m away", impact: +5))
-            } else {
-                signals.append(.init(kind: .nearbySafePlaces,
-                                     label: "No safe places within 1 km", impact: -8))
-            }
-        } else {
-            signals.append(.init(kind: .nearbySafePlaces, label: "Safe places unknown", impact: -5))
-        }
-        if context.nearbySafePlaceCount >= 4 {
-            signals.append(.init(kind: .safeInfrastructure,
-                                 label: "\(context.nearbySafePlaceCount) safe places nearby", impact: +8))
-        }
-
-        // CCTV coverage.
-        if context.cctvCoveragePercent >= 60 {
-            signals.append(.init(kind: .cctvCoverage,
-                                 label: "CCTV coverage available", impact: +6))
-        } else if context.cctvCoveragePercent > 0 {
-            signals.append(.init(kind: .cctvCoverage,
-                                 label: "Limited CCTV coverage", impact: -3))
-        }
-
-        // Incidents.
-        if context.nearbyIncidentCount > 0 {
-            signals.append(.init(kind: .recentIncidents,
-                                 label: "\(context.nearbyIncidentCount) reported nearby",
-                                 impact: -6 * min(context.nearbyIncidentCount, 3)))
-        }
-
-        // Connectivity.
-        switch context.connectivity {
-        case .online:
-            signals.append(.init(kind: .connectivity, label: "WiFi connected", impact: +8, provenance: .real))
-        case .cellular:
-            signals.append(.init(kind: .connectivity, label: "Cellular connected", impact: +6, provenance: .real))
-        case .mesh:
-            signals.append(.init(kind: .connectivity, label: "Mesh relay only", impact: -8))
-        case .offline:
-            signals.append(.init(kind: .connectivity, label: "No network — can't send alerts", impact: -18))
-        }
-
-        // Movement anomaly.
-        if context.unusualMovement {
-            signals.append(.init(kind: .unusualMovement, label: "Unusual movement pattern", impact: -14))
-        }
-
-        // Explicit user reassurance.
-        if context.userConfirmedSafe {
-            signals.append(.init(kind: .userConfirmation, label: "You confirmed you're safe", impact: +18))
-        }
-
-        // Watch / hardware events.
-        if let watch = context.watchEvent {
-            switch watch.kind {
-            case .sos:
-                signals.append(.init(kind: .watchEvent, label: "Watch SOS received", impact: -60,
-                                     provenance: .future))
-            case .fall:
-                signals.append(.init(kind: .watchEvent, label: "Possible fall detected", impact: -22,
-                                     provenance: .future))
-            case .heartRateSpike:
-                signals.append(.init(kind: .watchEvent, label: "Elevated heart rate", impact: -10,
-                                     provenance: .future))
-            case .checkIn:
-                signals.append(.init(kind: .watchEvent, label: "Watch check-in: safe", impact: +12,
-                                     provenance: .future))
-            case .journeyState:
-                break
-            }
-        }
-        if let hw = context.hardwareEvent, hw.eventType == .discreetSOS {
-            signals.append(.init(kind: .hardwareEvent, label: "Discreet hardware SOS", impact: -60,
-                                 provenance: .future))
-        }
-
-        // Compute score.
-        let base = 50
-        let raw = base + signals.reduce(0) { $0 + $1.impact }
-        let score = min(100, max(0, raw))
-
-        // Map score → state, then take the most severe of score/deviation/events.
         var state = Self.state(forScore: score)
-        state = Self.moreSevere(state, context.deviation.mappedState)
+
+        // The one legitimate override: a genuine, already-happened emergency
+        // event (not a predictive guess) always forces .emergency, regardless
+        // of what the area score says.
         if context.explicitEmergency
             || context.watchEvent?.kind == .sos
             || context.hardwareEvent?.eventType == .discreetSOS {

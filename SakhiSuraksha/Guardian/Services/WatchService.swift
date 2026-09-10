@@ -52,13 +52,6 @@ final class RealWatchService: NSObject, WatchService {
     func onEvent(_ handler: @escaping (WatchSafetyEvent) -> Void) {
         self.eventHandler = handler
     }
-
-    /// Push the current safety state to the Watch face (best-effort).
-    func send(safetyState: SafetyState) {
-        guard WCSession.default.isReachable else { return }
-        WCSession.default.sendMessage(["safetyState": safetyState.rawValue],
-                                       replyHandler: nil, errorHandler: nil)
-    }
 }
 
 // MARK: WCSessionDelegate

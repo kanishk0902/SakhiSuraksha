@@ -52,8 +52,15 @@ final class CommunityGuardianService {
     private weak var mesh: MeshService?
     private var searchTask: Task<Void, Never>?
 
-    // Escalating radius per spec: 500m -> 1km -> 2km, notify at most 3 per step.
-    private let radiusSteps: [Double] = [500, 1000, 2000]
+    // Escalating radius, notify at most 3 per step. These numbers reflect
+    // the ACTUAL range of the underlying transport — MultipeerConnectivity
+    // (Bluetooth/WiFi Direct mesh), not a real GPS-radius search. There is no
+    // backend/push infrastructure in this app, so a Guardian can only ever be
+    // reached if their phone is within real physical mesh range with the app
+    // open and broadcasting — realistically the same room/building, not a
+    // neighborhood. Using 500m/1km/2km here would be dishonest: it would
+    // imply a search radius the transport can never actually achieve.
+    private let radiusSteps: [Double] = [30, 60, 100]
     private let perStepTimeout: TimeInterval = 20
     private let requestExpiry: TimeInterval = 45
     private let notifyLimit = 3

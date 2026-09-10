@@ -191,8 +191,13 @@ final class SupportResourcesService {
     }
 
     func call(_ resource: SupportResource) {
-        guard let phone = resource.phone,
-              let url = URL(string: "tel://\(phone)") else { return }
+        guard let phone = resource.phone else { return }
+        // Strip formatting (spaces, dashes, parentheses) before building the
+        // tel: URL — matches the same sanitization used for contact numbers
+        // elsewhere (e.g. SOSView), since a formatted number would otherwise
+        // silently fail to produce a valid URL.
+        let digits = phone.filter { $0.isNumber || $0 == "+" }
+        guard let url = URL(string: "tel://\(digits)") else { return }
         UIApplication.shared.open(url)
     }
 }

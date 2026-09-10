@@ -48,15 +48,35 @@ struct GuardianDashboardView: View {
         }
     }
 
+    /// "Available" is just this device's saved setting — whether it can
+    /// actually receive a request right now also depends on the phone-to-
+    /// phone mesh connection genuinely being up, which requires the app open
+    /// and a nearby peer in real Bluetooth/WiFi range. Showing only the
+    /// saved setting would let a Guardian believe they're reachable when
+    /// they're not (e.g. app backgrounded, no peer nearby yet).
+    private var isActuallyReachable: Bool {
+        app.guardianService.localAvailability == .available && app.mesh.isAdvertising
+    }
+
     private var statusCard: some View {
         GuardianCard {
-            HStack {
-                Label(app.guardianService.localAvailability.title,
-                      systemImage: "person.2.wave.2.fill")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(app.guardianService.localAvailability.color)
-                Spacer()
-                ProvenanceBadge(provenance: .real)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Label(app.guardianService.localAvailability.title,
+                          systemImage: "person.2.wave.2.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(app.guardianService.localAvailability.color)
+                    Spacer()
+                    ProvenanceBadge(provenance: .real)
+                }
+                if app.guardianService.localAvailability == .available {
+                    Label(isActuallyReachable
+                          ? "Broadcasting — reachable by people within ~100m"
+                          : "Not currently broadcasting — keep Guardian open to stay reachable",
+                          systemImage: isActuallyReachable ? "dot.radiowaves.left.and.right" : "wifi.slash")
+                        .font(.caption2)
+                        .foregroundStyle(isActuallyReachable ? GuardianTheme.safe : GuardianTheme.caution)
+                }
             }
         }
     }

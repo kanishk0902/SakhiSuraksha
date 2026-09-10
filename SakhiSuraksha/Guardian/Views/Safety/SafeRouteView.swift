@@ -3,13 +3,17 @@
 //  Guardian
 //
 //  ML-backed Safe Route planner: search a destination, then see walking/
-//  cycling/driving options colour-coded green/yellow/red by a route-safety
-//  model trained on ~368k scored Jaipur street segments (see ml/README.txt
-//  and SafeRoutingService's header for the full honesty notes). This is
-//  distinct from SafetyTabView's on-device "Fastest vs Safer" comparison,
-//  which uses sparse local incident/CCTV data — this screen uses the richer
-//  offline dataset via a local server, and is the app's first feature that
-//  requires network connectivity.
+//  cycling/driving options ranked by a route-safety model trained on ~368k
+//  scored Jaipur street segments (see ml/README.txt and SafeRoutingService's
+//  header for the full honesty notes). This is distinct from SafetyTabView's
+//  on-device "Fastest vs Safer" comparison, which uses sparse local
+//  incident/CCTV data — this screen uses the richer offline dataset via a
+//  local server, and is the app's first feature that requires network
+//  connectivity.
+//
+//  v2 note: routes are ranked safest-first (up to 3, however many OSRM
+//  actually offers), not one-per-tier like the old model — all displayed
+//  routes could be the same tier if that's what the real alternatives are.
 //
 
 import SwiftUI
@@ -27,6 +31,8 @@ struct SafeRouteView: View {
     @State private var showSearchResults = false
     @State private var selectedMode: TravelMode = .walking
     @State private var didAutoSelectMode = false
+    @State private var selectedRouteRank: Int = 1
+    @State private var showLimitations = false
 
     var body: some View {
         NavigationStack {
@@ -64,7 +70,7 @@ struct SafeRouteView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Label("ML Safe Route", systemImage: "shield.checkerboard")
                             .font(.headline)
-                        Text("Compares walking, cycling and driving routes to your destination and highlights the safer option using a model trained on Jaipur street data.")
+                        Text("Compares walking, cycling and driving routes to your destination and ranks them safest-first using a model trained on Jaipur street data.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                         BetaBadge()
@@ -158,6 +164,7 @@ struct SafeRouteView: View {
             ForEach(TravelMode.allCases) { mode in
                 Button {
                     selectedMode = mode
+                    selectedRouteRank = 1
                     Haptics.tap()
                 } label: {
                     VStack(spacing: 4) {
@@ -183,11 +190,8 @@ struct SafeRouteView: View {
     private func resultsMap(_ response: SafeRouteResponse) -> some View {
         // The mode picker focuses the map on one mode's routes at a time
         // (drawing all three modes' routes together would be visual noise),
-        // but the summary below always lists all requested modes at once —
-        // per ml/README.txt, the backend returns walking, cycling AND
-        // driving by default and the UI should reflect all three, not just
-        // whichever tab happens to be selected.
-        let selectedRoutesByTier = response.modes[selectedMode.rawValue]?.routesByTier ?? [:]
+        // but the summary below always lists all requested modes at once.
+        let modeRoutes = response.modes[selectedMode.rawValue]?.routes ?? []
 
         return VStack(spacing: 0) {
             ZStack(alignment: .bottom) {
@@ -197,11 +201,13 @@ struct SafeRouteView: View {
                         Marker("Destination", systemImage: "flag.checkered", coordinate: destinationCoordinate)
                             .tint(GuardianTheme.accent)
                     }
-                    ForEach([SafetyTier.red, .yellow, .green], id: \.self) { tier in
-                        if let route = selectedRoutesByTier[tier] {
-                            MapPolyline(coordinates: route.coordinates)
-                                .stroke(tier.color, style: StrokeStyle(lineWidth: tier == .green ? 6 : 4, lineCap: .round))
-                        }
+                    // Draw all ranked routes, dimming the non-selected ones so
+                    // the chosen route is visually dominant while the
+                    // alternatives (for context) are still visible.
+                    ForEach(modeRoutes) { route in
+                        MapPolyline(coordinates: route.coordinates)
+                            .stroke(route.rank == selectedRouteRank ? route.color : route.color.opacity(0.35),
+                                    style: StrokeStyle(lineWidth: route.rank == selectedRouteRank ? 6 : 4, lineCap: .round))
                     }
                 }
                 .ignoresSafeArea(edges: .bottom)
@@ -211,12 +217,99 @@ struct SafeRouteView: View {
                 }
             }
 
+            if !modeRoutes.isEmpty {
+                scoreSourceHeader(response)
+                rankedRoutesList(modeRoutes)
+            }
             allModesSummary(response)
+        }
+        .sheet(isPresented: $showLimitations) {
+            limitationsSheet(response.disclosedLimitations ?? [])
         }
     }
 
-    /// All three modes' best (lowest-danger) route, shown together — tapping
-    /// a mode's row also switches the map above to that mode's routes.
+    /// Genuinely visible disclosure of the real disclosed_limitations array
+    /// from the API — not a buried fine-print footer. Placed directly next
+    /// to the scores it qualifies, and it's the exact list the backend sent,
+    /// never a client-side paraphrase.
+    private func scoreSourceHeader(_ response: SafeRouteResponse) -> some View {
+        HStack(spacing: 6) {
+            if let version = response.modelVersion {
+                Text("Model \(version)").font(.caption2).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button {
+                showLimitations = true
+            } label: {
+                Label("Limitations", systemImage: "info.circle")
+                    .font(.caption2.weight(.semibold))
+            }
+            .disabled((response.disclosedLimitations ?? []).isEmpty)
+        }
+        .padding(.horizontal)
+        .padding(.top, 10)
+    }
+
+    private func limitationsSheet(_ limitations: [String]) -> some View {
+        NavigationStack {
+            List(limitations, id: \.self) { item in
+                Text(item).font(.subheadline)
+            }
+            .navigationTitle("Model Limitations")
+            .inlineNavigationTitle()
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { showLimitations = false }
+                }
+            }
+        }
+    }
+
+    /// The current mode's ranked routes (safest-first, up to 3) — tapping one
+    /// selects it on the map above. All 3 can be the same tier; that's v2's
+    /// real "top 3 safest overall" ranking, not one-per-tier like v1.
+    private func rankedRoutesList(_ routes: [SafeRoute]) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                ForEach(routes) { route in
+                    Button {
+                        selectedRouteRank = route.rank
+                        Haptics.tap()
+                    } label: {
+                        GuardianCard(padding: 12) {
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack(spacing: 6) {
+                                    Circle().fill(route.color).frame(width: 8, height: 8)
+                                    Text(route.label).font(.caption.weight(.semibold))
+                                    if route.rank == selectedRouteRank {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .font(.caption2)
+                                            .foregroundStyle(GuardianTheme.accent)
+                                    }
+                                }
+                                Text("\(route.durationText) · \(route.distanceText)")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                                Text("Safety \(route.safetyScoreText)")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(route.color)
+                            }
+                        }
+                        .overlay(
+                            RoundedRectangle(cornerRadius: GuardianTheme.cornerRadius)
+                                .stroke(route.rank == selectedRouteRank ? GuardianTheme.accent : .clear, lineWidth: 2)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .frame(width: 150)
+                }
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 6)
+        }
+    }
+
+    /// All three modes' safest route, shown together — tapping a mode's row
+    /// also switches the map above to that mode's ranked routes.
     private func allModesSummary(_ response: SafeRouteResponse) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
@@ -230,11 +323,10 @@ struct SafeRouteView: View {
     }
 
     private func modeSummaryCard(mode: TravelMode, result: SafeModeResult?) -> some View {
-        let best = result?.routesByTier.min {
-            $0.value.adjustedScore < $1.value.adjustedScore
-        }
+        let safest = result?.routes?.first
         return Button {
             selectedMode = mode
+            selectedRouteRank = 1
             Haptics.tap()
         } label: {
             GuardianCard(padding: 12) {
@@ -250,16 +342,16 @@ struct SafeRouteView: View {
                     }
                     if let error = result?.error {
                         Text(error).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
-                    } else if let best {
+                    } else if let safest {
                         HStack(spacing: 5) {
-                            Circle().fill(best.key.color).frame(width: 8, height: 8)
-                            Text(best.key.title).font(.caption2)
+                            Circle().fill(safest.color).frame(width: 8, height: 8)
+                            Text(safest.tier.title).font(.caption2)
                         }
-                        Text("\(best.value.durationText) · \(best.value.distanceText)")
+                        Text("\(safest.durationText) · \(safest.distanceText)")
                             .font(.caption).foregroundStyle(.secondary)
-                        Text("Score \(best.value.safetyScore100)/100")
+                        Text("Score \(safest.safetyScoreText)")
                             .font(.caption2.weight(.semibold))
-                            .foregroundStyle(best.key.color)
+                            .foregroundStyle(safest.color)
                     } else {
                         ProgressView().scaleEffect(0.7)
                     }
@@ -314,16 +406,17 @@ struct SafeRouteView: View {
 
 // MARK: - Beta badge
 
-/// Persistent, honest indicator that this score is beta: 2 of 5 intended
-/// safety signals (lighting, crime) are constant placeholders with no real
-/// data behind them yet, and tier thresholds were only spot-checked against
-/// ~10 routes, not statistically validated. Never omit this badge from a
-/// screen that shows the ML safety score.
+/// Persistent, honest indicator that this score is beta. Deliberately
+/// generic (shown before any request completes, so no real per-response
+/// disclosed_limitations data exists yet) — the specific, real limitation
+/// list is shown after a request via the "Limitations" button, sourced
+/// directly from the API response's disclosed_limitations field, not
+/// paraphrased here.
 struct BetaBadge: View {
     var body: some View {
         HStack(spacing: 4) {
             Image(systemName: "flask.fill")
-            Text("Beta Safety Score — based on road type, police proximity & footfall. Lighting & crime data not yet available.")
+            Text("Beta Safety Score — see \"Limitations\" on results for what this model does and doesn't account for.")
         }
         .font(.caption2)
         .foregroundStyle(GuardianTheme.caution)

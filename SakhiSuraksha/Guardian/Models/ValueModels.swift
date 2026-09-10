@@ -227,14 +227,19 @@ struct SafetyCorridor {
     var cctv: [CCTVEvent]
     var zones: [SafetyZone]
     var meshNodes: [MeshNode]
-    var routeSafetyScore: Int
+    /// Real ML route score (0-100), or nil when the route hasn't been scored
+    /// yet or couldn't be (server unreachable / outside Jaipur coverage).
+    /// Optional on purpose: this used to be a non-optional Int seeded with a
+    /// hardcoded 78-ish heuristic, so the UI could never tell a real score
+    /// apart from a placeholder and always displayed something.
+    var routeSafetyScore: Int?
     var steps: [RouteStep] = []
     var cachedAt: Date = .now
 
     static let empty = SafetyCorridor(
         routeCoordinates: [], alternateRoutes: [], destination: .init(),
         expectedDuration: 0, checkpoints: [], nearbySafePlaces: [],
-        incidents: [], cctv: [], zones: [], meshNodes: [], routeSafetyScore: 80)
+        incidents: [], cctv: [], zones: [], meshNodes: [], routeSafetyScore: nil)
 }
 
 // MARK: - Mesh graph

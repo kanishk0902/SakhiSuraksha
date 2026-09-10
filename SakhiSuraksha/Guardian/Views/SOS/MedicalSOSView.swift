@@ -199,8 +199,8 @@ struct MedicalSOSView: View {
         context.insert(event)
         try? context.save()
 
-        app.triggerSOS(source: .medicalSOS,
-                       message: "Medical emergency: \(type.title). I need help.")
+        app.beginSOSCountdown(source: .medicalSOS,
+                              message: "Medical emergency: \(type.title). I need help.")
 
         Task {
             await nearbyService.search(for: .hospital, near: coord)

@@ -7,9 +7,12 @@
 //
 
 import SwiftUI
+import SwiftData
 
 struct RootView: View {
     @Environment(AppModel.self) private var app
+    @Environment(\.scenePhase) private var scenePhase
+    @Query private var discreetSOSSettings: [DiscreetSOSSettings]
     @State private var selection: Tab = .home
 
     enum Tab: Hashable { case home, journey, connect, safety, settings }
@@ -53,16 +56,34 @@ struct RootView: View {
                 .presentationDetents([.medium])
                 .interactiveDismissDisabled()
         }
-        .sheet(isPresented: $app.showMedicalSOS) { MedicalSOSView() }
-        .sheet(isPresented: $app.showPeriodEmergency) { PeriodEmergencyView() }
-        .sheet(isPresented: $app.showINeedHelp) { INeedHelpView() }
+        .sheet(isPresented: $app.gestureSOSPending) {
+            GestureSOSCountdownSheet()
+                .presentationDetents([.medium])
+                .interactiveDismissDisabled()
+        }
         .sheet(isPresented: $app.showSafeHavens) { SafeHavensView() }
-        .sheet(isPresented: $app.showWomenSupport) { WomenSupportView() }
-        .sheet(isPresented: $app.showReportSafetyIssue) { ReportSafetyIssueView() }
-        .sheet(isPresented: $app.showSafetyReports) { SafetyReportsView() }
         .sheet(isPresented: $app.showCommunityGuardianStatus) { CommunityGuardianStatusView() }
-        .sheet(isPresented: $app.showBecomeGuardian) { BecomeGuardianView() }
         .sheet(isPresented: $app.showGuardianDashboard) { GuardianDashboardView() }
+        // Discreet SOS auto-arms whenever the app is foregrounded (no manual
+        // "Start Listening" tap needed) and disarms the moment it isn't —
+        // iOS does not allow microphone/speech recognition to run in the
+        // background, so re-arming on every foreground transition is the
+        // closest real equivalent to "always listening."
+        .onAppear {
+            if scenePhase == .active {
+                app.autoArmDiscreetListeningIfEnabled(settings: discreetSOSSettings.first)
+                if app.gestureSOSAutoArm { app.armGestureSOS() }
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                app.autoArmDiscreetListeningIfEnabled(settings: discreetSOSSettings.first)
+                if app.gestureSOSAutoArm { app.armGestureSOS() }
+            } else {
+                app.stopDiscreetListening()
+                app.disarmGestureSOS()
+            }
+        }
     }
 }
 

@@ -141,7 +141,36 @@ struct HomeView: View {
                     ConnectivityChip(state: app.connectivity.state,
                                      forced: app.connectivity.isForced)
                 }
+
+                if !armedProtections.isEmpty {
+                    Divider()
+                    armedProtectionsRow
+                }
             }
+        }
+    }
+
+    /// Silent triggers (Discreet SOS, Gesture SOS) have no other visible
+    /// footprint once armed — they auto-arm on foreground with zero
+    /// confirmation UI otherwise, which left users with no way to tell they
+    /// were actually protected. This closes that gap without adding a
+    /// separate screen.
+    private var armedProtections: [(String, String)] {
+        var items: [(String, String)] = []
+        if app.voiceTrigger.isListening { items.append(("waveform", "Discreet SOS")) }
+        if app.gestureTrigger.isArmed { items.append(("hand.wave.fill", "Gesture SOS")) }
+        return items
+    }
+
+    private var armedProtectionsRow: some View {
+        HStack(spacing: 14) {
+            ForEach(armedProtections, id: \.1) { symbol, title in
+                Label(title, systemImage: symbol)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(GuardianTheme.safe)
+            }
+            Spacer()
+            Text("Armed").font(.caption2).foregroundStyle(.secondary)
         }
     }
 
@@ -225,8 +254,7 @@ struct HomeView: View {
                 selection = .journey
             }
             Button {
-                Haptics.warning()
-                app.showSOSScreen = true
+                app.beginSOSCountdown()
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "sos")
@@ -236,7 +264,8 @@ struct HomeView: View {
                 .guardianCapsule(GuardianTheme.emergency)
             }
             .buttonStyle(PressableStyle())
-            .accessibilityLabel("Open SOS screen")
+            .accessibilityLabel("Send SOS")
+            .accessibilityHint("Starts a 10-second countdown you can cancel before the alert is sent")
         }
     }
 

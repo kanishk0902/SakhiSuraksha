@@ -178,52 +178,12 @@ protocol RouteSafetyProvider {
     func safetyScore(for route: [CLLocationCoordinate2D]) async throws -> Int
 }
 
-/// Concrete RouteSafetyProvider. Scores routes on three real signals:
-/// 1. Incident / CCTV density along the corridor (zero until data sources connect)
-/// 2. Safe-place proximity — uses a TIGHT 60m corridor so only places literally
-///    on the route street count, giving genuine score differences between routes
-///    that travel different streets even within the same city block.
-/// 3. Route tortuosity — a straight, direct route on main roads scores higher
-///    than a winding one through back alleys (higher tortuosity = more deviation
-///    from straight line = more likely to use smaller, less-lit streets).
-struct LocalRouteSafetyProvider: RouteSafetyProvider {
-    let data: SafetyDataService
-    /// Tight corridor: only places within 60 m of a route coordinate count.
-    /// This lets routes on adjacent streets get genuinely different scores.
-    var corridorRadiusMeters: Double = 60
-
-    func safetyScore(for route: [CLLocationCoordinate2D]) async throws -> Int {
-        guard route.count >= 2 else { return 50 }
-
-        // 1. Incident / CCTV base
-        let nearIncidents = data.incidents.filter { incident in
-            route.contains { $0.location.distance(from: incident.coordinate.location) <= corridorRadiusMeters }
-        }
-        let nearCCTV = data.cctv.filter { event in
-            route.contains { $0.location.distance(from: event.coordinate.location) <= corridorRadiusMeters }
-        }
-        let base = JourneyService.routeSafetyScore(incidents: nearIncidents, cctv: nearCCTV)
-
-        // 2. Safe-place corridor bonus (police/hospital = 3pts, others = 1pt, max 12)
-        let safePlaceBonus = data.safePlaces.reduce(0) { acc, place in
-            guard route.contains(where: {
-                $0.location.distance(from: place.coordinate.location) <= corridorRadiusMeters
-            }) else { return acc }
-            return acc + (place.type == .police || place.type == .hospital ? 3 : 1)
-        }
-
-        // 3. Tortuosity penalty: route_length / straight-line_distance.
-        // A direct main-road route has tortuosity ≈1.0 (0 penalty).
-        // A winding back-street route might be 1.5–2.0 (up to -18 pts).
-        let straight = route.first!.location.distance(from: route.last!.location)
-        let routeLen = zip(route, route.dropFirst())
-            .reduce(0.0) { $0 + $1.0.location.distance(from: $1.1.location) }
-        let tortuosity = straight > 10 ? routeLen / straight : 1.0
-        let tortuosityPenalty = Int(min(18, max(0, (tortuosity - 1.0) * 22)))
-
-        return min(100, max(30, base + min(12, safePlaceBonus) - tortuosityPenalty))
-    }
-}
+/// NOTE: LocalRouteSafetyProvider was removed here. It scored routes from a
+/// hardcoded base (78) plus invented point values for CCTV coverage, incident
+/// counts, safe-place proximity and route tortuosity, clamped to 30-100 — so
+/// it always returned a confident-looking number regardless of whether any
+/// real data backed it. Route scoring now goes through MLRouteSafetyProvider
+/// (see SafeRoutingService), which asks the actual model.
 
 // MARK: - SafePlaceType scoring defaults
 

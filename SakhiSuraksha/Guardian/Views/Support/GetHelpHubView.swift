@@ -39,7 +39,7 @@ struct GetHelpHubView: View {
              symbol: "storefront.fill", tint: GuardianTheme.safe, destination: .safeHavens),
         Item(title: "Women's Support", subtitle: "Helplines, One Stop Centres, verified NGOs",
              symbol: "heart.fill", tint: .pink, destination: .womenSupport),
-        Item(title: "Report Safety Issue", subtitle: "Report a concern for this area",
+        Item(title: "Safety Reports", subtitle: "View nearby reports, or report a concern",
              symbol: "flag.fill", tint: GuardianTheme.caution, destination: .report),
     ]
 

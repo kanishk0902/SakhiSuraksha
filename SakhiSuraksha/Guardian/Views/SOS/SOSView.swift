@@ -23,11 +23,9 @@ struct SOSView: View {
     @State private var autoActionsTriggered = false
     @Environment(\.modelContext) private var modelContext
 
-    // Pre-activation countdown (between hold-to-send and SOS firing)
-    @State private var preCountdown: Int? = nil      // nil = not counting down
-    @State private var emergencyNote: String = ""
-    @State private var preCountdownTask: Task<Void, Never>?
-    private let preCountdownDuration = 10
+    // The countdown itself lives on AppModel (see beginSOSCountdown) so every
+    // SOS button in the app shares one behavior; this view just renders it.
+    private var preCountdown: Int? { app.sosCountdown }
 
     var body: some View {
         NavigationStack {
@@ -86,13 +84,10 @@ struct SOSView: View {
             autoActionsTriggered = true
             try? await Task.sleep(for: .milliseconds(700))
             guard !Task.isCancelled, app.emergency.isSOSActive else { return }
-            if let loc = app.location.currentLocation,
-               app.emergency.microphonePermission == .granted,
-               !app.emergency.isRecording {
-                app.emergency.startEvidence(kind: .audio, location: loc.coordinate,
-                                            safetyState: .emergency, journeyID: nil,
-                                            context: modelContext)
-            }
+            // Evidence recording now starts in AppModel.activateSOS so it also
+            // happens for SOS triggered while this view isn't on screen.
+            // Opening the SMS composer genuinely needs a foreground view
+            // (openURL), so that part necessarily stays here.
             if !contacts.isEmpty { sendEmergencySMS() }
         }
     }
@@ -112,7 +107,7 @@ struct SOSView: View {
                 Circle()
                     .stroke(GuardianTheme.emergency.opacity(0.2), lineWidth: 12)
                 Circle()
-                    .trim(from: 0, to: CGFloat(seconds) / CGFloat(preCountdownDuration))
+                    .trim(from: 0, to: CGFloat(seconds) / CGFloat(AppModel.sosCountdownDuration))
                     .stroke(GuardianTheme.emergency,
                             style: StrokeStyle(lineWidth: 12, lineCap: .round))
                     .rotationEffect(.degrees(-90))
@@ -141,7 +136,13 @@ struct SOSView: View {
                 Text("Describe what's happening (optional)")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
-                TextField("e.g. being followed near MG Road…", text: $emergencyNote, axis: .vertical)
+                // Bound straight to the model: the countdown now fires from
+                // AppModel, so a note kept only in this view's state would be
+                // lost when it fires.
+                TextField("e.g. being followed near MG Road…",
+                          text: Binding(get: { app.emergencyNote ?? "" },
+                                        set: { app.emergencyNote = $0.isEmpty ? nil : $0 }),
+                          axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(3, reservesSpace: true)
                     .font(.subheadline)
@@ -169,35 +170,12 @@ struct SOSView: View {
     }
 
     private func startPreActivationCountdown() {
-        preCountdown = preCountdownDuration
-        emergencyNote = ""
-        preCountdownTask?.cancel()
-        Haptics.warning()
-        preCountdownTask = Task {
-            for remaining in stride(from: preCountdownDuration - 1, through: 0, by: -1) {
-                try? await Task.sleep(for: .seconds(1))
-                if Task.isCancelled { return }
-                preCountdown = remaining
-                if remaining <= 3 { Haptics.tap() }
-            }
-            guard !Task.isCancelled else { return }
-            fireSOS()
-        }
+        app.emergencyNote = nil
+        app.beginSOSCountdown(source: .manual)
     }
 
     private func cancelPreCountdown() {
-        preCountdownTask?.cancel()
-        preCountdownTask = nil
-        preCountdown = nil
-        emergencyNote = ""
-        Haptics.success()
-    }
-
-    private func fireSOS() {
-        preCountdownTask = nil
-        preCountdown = nil
-        app.emergencyNote = emergencyNote.isEmpty ? nil : emergencyNote
-        app.triggerSOS(source: .manual)
+        app.cancelSOSCountdown()
     }
 
     private var backgroundColor: Color {
@@ -428,7 +406,7 @@ struct SOSView: View {
                                       tint: GuardianTheme.accent) {
                     sendEmergencySMS()
                 }
-                SecondaryActionButton(title: "Get Me Somewhere Safe",
+                SecondaryActionButton(title: "Get Me Safe",
                                       systemImage: "shield.lefthalf.filled",
                                       tint: GuardianTheme.safe) {
                     showGetSafe = true

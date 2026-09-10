@@ -8,6 +8,12 @@
 //  never claimed as real-world certification. Mirrors DiscreetSOSSettingsView's
 //  single-Form, load/save pattern.
 //
+//  IMPORTANT — real range: matching runs over MultipeerConnectivity
+//  (Bluetooth/WiFi Direct), not a server. There is no backend, so a Guardian
+//  can only ever be reached while they are within real physical range (same
+//  room/building — tens of meters, not a neighborhood) with the app open.
+//  Copy in this screen must never imply a wider radius than that.
+//
 
 import SwiftUI
 import SwiftData
@@ -21,7 +27,6 @@ struct BecomeGuardianView: View {
     @State private var level: GuardianVerificationLevel = .community
     @State private var capabilities: Set<GuardianCapability> = []
     @State private var isAvailable = false
-    @State private var showDashboard = false
 
     private var localGuardian: CommunityGuardian? {
         localGuardians.first { $0.isLocalUser }
@@ -30,8 +35,11 @@ struct BecomeGuardianView: View {
     var body: some View {
         Form {
             Section {
-                Text("Community Guardian lets nearby opted-in people offer non-confrontational assistance during someone's SOS — while professional emergency services remain the primary response. You will only ever be shown requests routed to you for an active emergency, never a list of nearby people.")
+                Text("Community Guardian lets opted-in people who are physically very close by — the same room, home, or building, like a hostel, apartment block, or office — offer non-confrontational assistance during someone's SOS, while professional emergency services remain the primary response. You will only ever be shown requests routed to you for an active emergency, never a list of nearby people.")
                     .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Label("Works over direct phone-to-phone connection, not the internet — Guardians must be within about 100 meters with the app open to be reachable.", systemImage: "antenna.radiowaves.left.and.right")
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
 
@@ -78,14 +86,14 @@ struct BecomeGuardianView: View {
 
             if localGuardian != nil {
                 Section("Availability") {
-                    Toggle("Available to assist nearby", isOn: $isAvailable)
+                    Toggle("Available to assist right now", isOn: $isAvailable)
                         .onChange(of: isAvailable) { _, newValue in
                             app.guardianService.setAvailability(
                                 newValue ? .available : .offline,
                                 location: newValue ? app.location.currentLocation?.coordinate : nil)
                         }
                     if isAvailable {
-                        Text("Your approximate location is only shared if you're matched to an active emergency.")
+                        Text("Only reachable while Guardian is open on your phone and you're within about 100m of someone's emergency. Your approximate distance is only shared if you're matched to an active emergency.")
                             .font(.caption2).foregroundStyle(.secondary)
                     }
                 }

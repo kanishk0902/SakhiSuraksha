@@ -56,32 +56,39 @@ struct ActiveJourneyView: View {
 
     private func scoreRoutes(_ journey: LiveJourney) async {
         let all = [journey.corridor.routeCoordinates] + journey.corridor.alternateRoutes
-        guard all.count > 1 else { routeColors = []; return }
-        let provider = LocalRouteSafetyProvider(data: app.safetyData)
+        // Note: no early return for a single route — colours are only useful
+        // for comparing alternatives, but the active route still needs its own
+        // real score for the "Route" metric, so scoring always runs.
+        guard !all.isEmpty else { routeColors = []; return }
+        // Real model scores. If ANY route can't be scored (server down, outside
+        // Jaipur coverage), no route gets a colour — a partially-coloured map
+        // would invite comparing a real score against a made-up one.
+        let provider = MLRouteSafetyProvider(routing: app.safeRouting)
         var scores: [Int] = []
         for route in all {
-            let s = (try? await provider.safetyScore(for: route)) ?? 50
+            guard let s = try? await provider.safetyScore(for: route) else {
+                routeColors = []
+                return
+            }
             scores.append(s)
         }
-        // Normalize across routes so they always span green/yellow/red.
-        // Relative rank (best vs worst route) is what matters for the user.
-        let minS = scores.min() ?? 50
-        let maxS = scores.max() ?? 50
-        let normalized: [Int]
-        if maxS - minS < 5 {
-            // Routes nearly identical score-wise → force colour spread by index
-            normalized = scores.indices.map { i in max(30, 90 - i * 25) }
-        } else {
-            normalized = scores.map { s in
-                Int(30.0 + Double(s - minS) / Double(maxS - minS) * 60.0)
-            }
-        }
-        routeColors = normalized.map { routeColor(score: $0) }
+        // Colour from the score itself, using the same thresholds the ML
+        // backend uses for its tiers. The previous version normalised scores
+        // across routes so they ALWAYS spanned green→red — which meant three
+        // near-identical safe routes were drawn as if one were dangerous, and
+        // the safest route could be painted red purely for being listed last.
+        routeColors = all.count > 1 ? scores.map { routeColor(score: $0) } : []
+        // The first entry is the active route, so this is also where the
+        // journey's own displayed score comes from — a real model score
+        // replacing the hardcoded one it used to be seeded with.
+        journey.corridor.routeSafetyScore = scores.first
     }
 
+    /// Thresholds match the backend's tier cut-offs (green ≥70, yellow ≥35)
+    /// so a route's colour here agrees with its colour on the Safe Route screen.
     private func routeColor(score: Int) -> Color {
-        if score >= 65 { return GuardianTheme.safe }
-        if score >= 40 { return Color.orange }
+        if score >= 70 { return GuardianTheme.safe }
+        if score >= 35 { return Color.orange }
         return GuardianTheme.emergency
     }
 
@@ -209,7 +216,7 @@ struct ActiveJourneyView: View {
                     SecondaryActionButton(title: "Get Me Safe", systemImage: "shield.lefthalf.filled",
                                           tint: GuardianTheme.safe) { showGetSafe = true }
                     SecondaryActionButton(title: "SOS", systemImage: "sos",
-                                          tint: GuardianTheme.emergency) { app.activateSOS(message: nil) }
+                                          tint: GuardianTheme.emergency) { app.beginSOSCountdown() }
                 }
             }
         }
@@ -235,7 +242,9 @@ struct ActiveJourneyView: View {
                     Divider().frame(height: 34)
                     metric("Confidence", "\(app.confidence.score)", "shield.fill")
                     Divider().frame(height: 34)
-                    metric("Route", "\(journey.corridor.routeSafetyScore)", "road.lanes")
+                    metric("Route",
+                           journey.corridor.routeSafetyScore.map(String.init) ?? "—",
+                           "road.lanes")
                 }
                 HStack {
                     ConnectivityChip(state: app.connectivity.state, forced: app.connectivity.isForced)

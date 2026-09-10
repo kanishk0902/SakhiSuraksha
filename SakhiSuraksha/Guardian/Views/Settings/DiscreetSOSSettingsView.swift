@@ -2,11 +2,14 @@
 //  DiscreetSOSSettingsView.swift
 //  Guardian
 //
-//  Set up a custom emergency phrase. Detection only runs while Guardian is
-//  open in the foreground and you've tapped "Start Listening" — iOS does not
-//  allow unrestricted background microphone access. The phrase is matched as
-//  exact text, not tone or emotion — Guardian never claims to detect distress
-//  in your voice, only the words you chose.
+//  Set up a custom emergency phrase. Once enabled with a phrase, Guardian
+//  listens automatically any time the app is open in the foreground — no
+//  manual "Start Listening" step. iOS does not allow unrestricted background
+//  microphone access, so listening always stops the moment the app leaves
+//  the foreground and restarts automatically the next time it returns
+//  (see RootView's scenePhase handling). The phrase is matched as exact
+//  text, not tone or emotion — Guardian never claims to detect distress in
+//  your voice, only the words you chose.
 //
 
 import SwiftUI
@@ -15,7 +18,6 @@ import SwiftData
 struct DiscreetSOSSettingsView: View {
     @Environment(AppModel.self) private var app
     @Environment(\.modelContext) private var context
-    @Environment(\.scenePhase) private var scenePhase
     @Query private var allSettings: [DiscreetSOSSettings]
     @Query(sort: \EmergencyContact.name) private var contacts: [EmergencyContact]
 
@@ -25,7 +27,6 @@ struct DiscreetSOSSettingsView: View {
     @State private var timeoutSeconds = 10
     @State private var autoShareLocation = true
     @State private var phraseMismatch = false
-    @State private var isListening = false
 
     private var settings: DiscreetSOSSettings? { allSettings.first }
 
@@ -65,14 +66,10 @@ struct DiscreetSOSSettingsView: View {
             }
 
             Section {
-                Button {
-                    toggleListening()
-                } label: {
-                    Label(isListening ? "Stop Listening" : "Start Listening",
-                          systemImage: isListening ? "waveform.slash" : "waveform")
-                }
-                .disabled(!isEnabled || phrase.isEmpty)
-                Text("Only works while Guardian is open in the foreground. Guardian cannot listen while the app is closed or in the background — this is an iOS platform limitation, not a bug.")
+                Label(app.voiceTrigger.isListening ? "Listening now" : "Not listening",
+                      systemImage: app.voiceTrigger.isListening ? "waveform" : "waveform.slash")
+                    .foregroundStyle(app.voiceTrigger.isListening ? GuardianTheme.safe : .secondary)
+                Text("Guardian listens automatically whenever it's open and Discreet SOS is enabled — no button to tap. It cannot listen while the app is closed or in the background; that's an iOS platform limitation, not a bug.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -85,16 +82,6 @@ struct DiscreetSOSSettingsView: View {
         .navigationTitle("Discreet SOS")
         .inlineNavigationTitle()
         .onAppear(perform: load)
-        .onChange(of: scenePhase) { _, phase in
-            if phase != .active {
-                app.stopDiscreetListening()
-                isListening = false
-            }
-        }
-        .onDisappear {
-            app.stopDiscreetListening()
-            isListening = false
-        }
     }
 
     private func load() {
@@ -112,33 +99,32 @@ struct DiscreetSOSSettingsView: View {
             return
         }
         phraseMismatch = false
+        let saved: DiscreetSOSSettings
         if let existing = settings {
             existing.isEnabled = isEnabled
             existing.phrase = phrase
             existing.activationTimeoutSeconds = timeoutSeconds
             existing.autoShareLocation = autoShareLocation
             existing.updatedAt = .now
+            saved = existing
         } else {
             let new = DiscreetSOSSettings(isEnabled: isEnabled, phrase: phrase,
                                           activationTimeoutSeconds: timeoutSeconds,
                                           autoShareLocation: autoShareLocation)
             context.insert(new)
+            saved = new
         }
         try? context.save()
         Haptics.success()
-    }
 
-    private func toggleListening() {
-        if isListening {
+        // Re-arm immediately with the new phrase/timeout, or stop if the
+        // user just disabled it — otherwise a saved change wouldn't take
+        // effect until the app is next backgrounded and re-foregrounded.
+        if isEnabled {
             app.stopDiscreetListening()
-            isListening = false
+            app.autoArmDiscreetListeningIfEnabled(settings: saved)
         } else {
-            Task {
-                let granted = await app.voiceTrigger.requestAuthorization()
-                guard granted else { return }
-                app.startDiscreetListening(phrase: phrase, countdownSeconds: timeoutSeconds)
-                isListening = true
-            }
+            app.stopDiscreetListening()
         }
     }
 }

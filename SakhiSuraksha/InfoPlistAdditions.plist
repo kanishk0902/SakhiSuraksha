@@ -9,6 +9,18 @@
 	Simulator does not need this: literal "localhost"/127.0.0.1 connections
 	are exempt from ATS automatically.
 
+	CORRECTNESS NOTE: this previously used "NSAllowsLocalNetworking", which
+	is NOT a real ATS key (it's easily confused with the unrelated Local
+	Network privacy permission, NSLocalNetworkUsageDescription) — it was
+	silently ignored, so plain HTTP to a real LAN IP (e.g. 10.58.183.99) was
+	still blocked by ATS even though "localhost" itself worked, which is why
+	Simulator testing looked fine while physical-device testing failed with
+	"server unreachable." NSAllowsArbitraryLoads is the real key that
+	disables ATS's HTTPS requirement — used here because the dev Mac's LAN
+	IP changes between Wi-Fi networks, so a specific per-domain exception
+	would need editing every time; a per-domain exception is more scoped if
+	you'd rather maintain it as the IP changes.
+
 	This is a local-development convenience for a feature with no shipping
 	backend yet. Before shipping to real users, either move Safe Route to a
 	real HTTPS-hosted backend and remove this exception, or scope it to a
@@ -16,25 +28,10 @@
 	-->
 	<key>NSAppTransportSecurity</key>
 	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
 		<key>NSAllowsArbitraryLoadsInWebContent</key>
 		<false/>
-		<key>NSExceptionDomains</key>
-		<dict>
-			<key>localhost</key>
-			<dict>
-				<key>NSExceptionAllowsInsecureHTTPLoads</key>
-				<true/>
-			</dict>
-		</dict>
-		<!--
-		Physical devices reach the Mac by LAN IP (e.g. 192.168.1.42), not a
-		fixed hostname, so a per-domain exception can't be pre-declared.
-		NSAllowsLocalNetworking covers HTTP to private/local IP ranges
-		(RFC 1918, .local mDNS, link-local) without opening ATS to the
-		public internet the way NSAllowsArbitraryLoads would.
-		-->
-		<key>NSAllowsLocalNetworking</key>
-		<true/>
 	</dict>
 	<!--
 	Lets an active journey keep tracking location (for deviation detection

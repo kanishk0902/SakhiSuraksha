@@ -33,13 +33,17 @@ struct EvidenceView: View {
             .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .guardianTrailing) {
-                    Button("Done") {
-                        if app.emergency.isRecording {
-                            app.emergency.stopEvidence(context: context)
-                        }
-                        dismiss()
-                    }
+                    Button("Done") { dismiss() }
                 }
+            }
+        }
+        // Swiping the sheet away (not just tapping Done) must also stop an
+        // in-progress recording — otherwise the mic keeps running with only
+        // a small in-sheet indicator as the only sign, which the user just
+        // dismissed from view.
+        .onDisappear {
+            if app.emergency.isRecording {
+                app.emergency.stopEvidence(context: context)
             }
         }
     }

@@ -105,6 +105,31 @@ final class EmergencyService {
         return packet
     }
 
+    /// Adopts a packet that was already created and persisted elsewhere —
+    /// used to finish a Guardian Action Button trigger, which writes its own
+    /// EmergencyPacket directly to SwiftData from a background App Intent
+    /// process (no AppModel/EmergencyService instance available there) and
+    /// marks it .queued. On next app launch, AppModel finds that packet and
+    /// calls this instead of activateSOS, so it's completed once rather than
+    /// duplicated into a second packet.
+    func adopt(queuedPacket packet: EmergencyPacket, mesh: MeshService) {
+        isSOSActive = true
+        activatedAt = packet.timestamp
+        currentPacket = packet
+        packet.deliveryState = .created
+
+        struct SOSPayload: Encodable {
+            let packetID: String; let message: String
+            let lat: Double; let lon: Double; let senderID: String
+        }
+        if let payload = try? JSONEncoder().encode(SOSPayload(
+            packetID: packet.packetID.uuidString, message: packet.message,
+            lat: packet.latitude, lon: packet.longitude, senderID: packet.senderID)) {
+            let relay = RelayPacket(type: .emergency, payload: payload)
+            mesh.originate(relay)
+        }
+    }
+
     func resolveSOS() {
         isSOSActive = false
         activatedAt = nil

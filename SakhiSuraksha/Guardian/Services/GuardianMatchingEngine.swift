@@ -75,7 +75,7 @@ struct GuardianMatchingEngine {
         switch category {
         case .medicalSOS:
             return [.medicalAssistance, .firstAid]
-        case .manual, .discreetPhrase, .journeyTimeout, .appleWatch, .fallDetection, .other:
+        case .manual, .discreetPhrase, .gesture, .actionButton, .journeyTimeout, .appleWatch, .fallDetection, .other:
             return [.security, .generalAssistance]
         }
     }

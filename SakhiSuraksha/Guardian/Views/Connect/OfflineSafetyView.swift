@@ -76,7 +76,7 @@ struct OfflineSafetyView: View {
             PrimaryActionButton(title: "Send SOS Emergency Packet",
                                 systemImage: "shippingbox.fill",
                                 color: GuardianTheme.emergency) {
-                app.activateSOS(message: nil)
+                app.beginSOSCountdown()
             }
             Text("Packets are stored locally and relay automatically when a mesh peer or internet path returns.")
                 .font(.caption).foregroundStyle(.secondary)

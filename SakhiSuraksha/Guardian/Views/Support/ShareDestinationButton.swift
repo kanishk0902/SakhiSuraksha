@@ -27,14 +27,18 @@ struct ShareDestinationButton: View {
         }
         .buttonStyle(.plain)
         .confirmationDialog("Tell a trusted contact", isPresented: $showPicker, titleVisibility: .visible) {
-            if contacts.isEmpty {
-                Button("Add a contact in Settings") {}
-            } else {
-                ForEach(contacts) { contact in
-                    Button(contact.name) { share(with: contact) }
-                }
+            ForEach(contacts) { contact in
+                Button(contact.name) { share(with: contact) }
             }
             Button("Cancel", role: .cancel) {}
+        } message: {
+            // A confirmationDialog button can't navigate anywhere once
+            // tapped, so when there are no contacts this shows guidance as
+            // plain text instead of a button that looks actionable but does
+            // nothing when pressed.
+            if contacts.isEmpty {
+                Text("Add a trusted contact in Settings first.")
+            }
         }
     }
 

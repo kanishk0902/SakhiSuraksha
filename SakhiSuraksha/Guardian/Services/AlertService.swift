@@ -65,16 +65,20 @@ final class AlertService {
             "parse_mode":              "Markdown",
             "disable_web_page_preview": false
         ])
+        guard !Task.isCancelled else { return }
         telegramStatus = "Message sent"
 
-        // Follow with a live-location pin (5 minutes)
+        // Follow with a live-location pin (5 minutes) — skipped if the user
+        // already marked themselves safe (activateSOS's task was cancelled).
         if let loc = location {
+            guard !Task.isCancelled else { return }
             await telegramPost(endpoint: "sendLocation", body: [
                 "chat_id":     AppSecrets.telegramChatID,
                 "latitude":    loc.coordinate.latitude,
                 "longitude":   loc.coordinate.longitude,
                 "live_period": 300
             ])
+            guard !Task.isCancelled else { return }
             telegramStatus = "Message + live location sent"
         }
     }
@@ -112,15 +116,20 @@ final class AlertService {
         ]
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
-        if let (data, resp) = try? await URLSession.shared.data(for: req),
+        guard !Task.isCancelled else { return }
+        if let (_, resp) = try? await URLSession.shared.data(for: req),
            let http = resp as? HTTPURLResponse {
-            let respBody = String(data: data, encoding: .utf8) ?? ""
+            // Never surface the raw API response — it can contain technical
+            // JSON/error detail that's jarring during an active emergency.
+            // The important fact for the user is only whether the call went
+            // out, not why it didn't.
             callStatus = (http.statusCode == 200 || http.statusCode == 201)
                 ? "Call dispatched ✓"
-                : "Call API \(http.statusCode): \(respBody)"
+                : "Call couldn't be placed automatically — try 112 directly."
         } else {
-            callStatus = "Call request failed (network?)"
+            callStatus = "Call couldn't be placed automatically — try 112 directly."
         }
+        guard !Task.isCancelled else { return }
         lastCallAt = .now
     }
 

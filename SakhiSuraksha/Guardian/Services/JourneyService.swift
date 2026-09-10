@@ -103,8 +103,11 @@ final class JourneyService {
             cctv: data.cctv,
             zones: data.zones,
             meshNodes: [],           // real peers don't have map coordinates yet
-            routeSafetyScore: Self.routeSafetyScore(incidents: data.incidents,
-                                                    cctv: data.cctv),
+            // Scored asynchronously by the real model once the journey is
+            // showing (see ActiveJourneyView/ActiveNavigationView) — starting
+            // at nil means the UI shows "scoring…" rather than a made-up
+            // number that gets silently replaced a moment later.
+            routeSafetyScore: nil,
             steps: route.steps)
         let journey = LiveJourney(originName: originName, destinationName: destinationName,
                                   origin: origin, destination: destination,
@@ -364,10 +367,4 @@ final class JourneyService {
         }
     }
 
-    static func routeSafetyScore(incidents: [Incident], cctv: [CCTVEvent]) -> Int {
-        let coverage = cctv.isEmpty ? 0 : cctv.map(\.coveragePercent).reduce(0, +) / cctv.count
-        let base = 78 + coverage / 10
-        let penalty = incidents.count * 5
-        return min(100, max(30, base - penalty))
-    }
 }

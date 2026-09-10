@@ -53,7 +53,7 @@ struct CommunityGuardianStatusView: View {
                      : app.guardianService.flowState.title)
                     .font(.subheadline)
                 if app.guardianService.flowState == .searching {
-                    Text("Searching within \(Int(app.guardianService.currentSearchRadius))m")
+                    Text("Searching within \(Int(app.guardianService.currentSearchRadius))m — Community Guardian works phone-to-phone, so only people this close with the app open can be reached.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if app.guardianService.flowState == .failed {

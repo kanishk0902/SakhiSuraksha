@@ -55,7 +55,7 @@ struct INeedHelpView: View {
             }
             .confirmationDialog("Send an SOS alert?", isPresented: $confirmUnsafe, titleVisibility: .visible) {
                 Button("Send SOS", role: .destructive) {
-                    app.triggerSOS(source: .manual, message: "I feel unsafe. I need help.")
+                    app.beginSOSCountdown(source: .manual, message: "I feel unsafe. I need help.")
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {

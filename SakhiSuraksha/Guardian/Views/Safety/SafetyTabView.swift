@@ -13,6 +13,7 @@ struct SafetyTabView: View {
     @Environment(AppModel.self) private var app
     @State private var filter: Filter = .all
     @State private var routeScores: [Int: Int] = [:]  // index into candidateRoutes -> score
+    @State private var isScoringRoutes = false
 
     enum Filter: String, CaseIterable, Identifiable {
         case all = "All"
@@ -60,10 +61,17 @@ struct SafetyTabView: View {
     }
 
     private func scoreCandidateRoutes() async {
-        let provider = LocalRouteSafetyProvider(data: app.safetyData)
+        // Real model scores; a route that can't be scored is simply absent
+        // from the dictionary, so the UI shows no score for it rather than a
+        // placeholder 50 that looks like a real measurement.
+        isScoringRoutes = true
+        defer { isScoringRoutes = false }
+        let provider = MLRouteSafetyProvider(routing: app.safeRouting)
         var scores: [Int: Int] = [:]
         for (index, candidate) in candidateRoutes.enumerated() {
-            scores[index] = (try? await provider.safetyScore(for: candidate.coords)) ?? 50
+            if let s = try? await provider.safetyScore(for: candidate.coords) {
+                scores[index] = s
+            }
         }
         routeScores = scores
     }
@@ -106,8 +114,15 @@ struct SafetyTabView: View {
                         .foregroundStyle(SafetyState.passive.color.opacity(Double(score) / 100 + 0.3))
                     Text("Safety Score").font(.caption2).foregroundStyle(.secondary)
                 }
-            } else {
+            } else if isScoringRoutes {
                 ProgressView().scaleEffect(0.8)
+            } else {
+                // Scoring finished without a score for this route (server
+                // unreachable, or outside the model's Jaipur coverage). Say so
+                // instead of spinning forever or showing a placeholder number.
+                Text("No score")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
         }
     }
